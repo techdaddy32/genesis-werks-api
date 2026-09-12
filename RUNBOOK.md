@@ -9,7 +9,7 @@ Run-list: `../pipeline/2026-09-12-suite-own-database-run-list.md`._
 |---|---|---|---|
 | Cloudflare Worker | `fhi-service-wo` (tag 4facd933ce414964b4ab52e09ba37bed) | LIVE | to be renamed `genesis-api` at F2 (rename = new Worker name in wrangler.toml; keep old route until LV Plan points at the new URL) |
 | Cloudflare KV | `WO_KV` aaeba18d5652455496657aa231210af4 | LIVE, to be retired at F3 | counter, technicians, hours, daily-report entries |
-| Cloudflare R2 | `genesis-files` (ENAM, Standard) | CREATED 2026-09-12 | plan images / photos / PDFs; enable versioning (dashboard → bucket → Settings) |
+| Cloudflare R2 | `genesis-files` (ENAM, Standard) | CREATED 2026-09-12 (replaces the empty `suite-files`, deleted) | plan images / photos / PDFs; enable versioning (dashboard → bucket → Settings) |
 | Cloudflare R2 | `fhi-site-photos` (pre-existing, 2026-08-29) | LIVE | F-85 hub photo store — decide at P3a whether to merge into `genesis-files` or keep |
 | Cloudflare Hyperdrive | — | NOT YET | create after the Supabase project exists (needs its pooler connection string) |
 | Supabase | org "Horizon" · project `genesis-werks-prod` | NOT YET | Craig creates (see below) |
