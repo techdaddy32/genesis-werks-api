@@ -1,0 +1,20 @@
+# Secrets — never commit
+.dev.vars
+.env
+*.local
+
+# Dependencies / build
+node_modules/
+dist/
+.wrangler/
+
+# OS / editor
+.DS_Store
+*.log
+
+# Added 2026-09-12 (G0)
+*.timestamp-*.mjs
+_backups/
+*.bak
+.dev.vars.*
+!.dev.vars.example

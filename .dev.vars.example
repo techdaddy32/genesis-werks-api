@@ -1,0 +1,57 @@
+# =============================================================================
+# FHI Service Work Order Worker — LOCAL dev env example
+# Copy to `.dev.vars` for `wrangler dev`. In production, set these as SECRETS
+# with `wrangler secret put <NAME>` (except the non-secret vars, which live in
+# wrangler.toml [vars]). NEVER commit real values. `.dev.vars` is gitignored.
+# =============================================================================
+
+# --- Zoho Projects OAuth (self-client, DC = .com) -----------------------------
+ZOHO_REFRESH_TOKEN=your-zoho-refresh-token          # does NOT expire; from api-console.zoho.com self-client
+ZOHO_CLIENT_ID=your-zoho-client-id                  # self-client OAuth client id
+ZOHO_CLIENT_SECRET=your-zoho-client-secret          # self-client OAuth client secret
+ZOHO_PORTAL_ID=705869960                             # fhiflorida32 portal (ground truth; also in wrangler.toml)
+
+# --- Zoho Projects config -----------------------------------------------------
+ZOHO_API_BASE=https://projectsapi.zoho.com/api/v3
+ZOHO_ACCOUNTS_BASE=https://accounts.zoho.com
+
+# The task custom field that stores the FULL composite WO string (e.g. FHI-672-WO-2026-0001).
+# CONFIRMED 2026-08-19 via the FHI-TEST task on Howe (FHI-672): the "Work Orders #" task field
+# is the custom column `work_order_hash`.
+ZOHO_WO_FIELD=work_order_hash
+
+# How SERVICE projects are identified when listing. Default matches on project name suffix.
+# TODO(craig): if you'd rather filter by the "SERVICE Project" tag or the "Service Projects"
+# group id, set the mode + value here (see src/zoho.ts listServiceProjects()).
+ZOHO_SERVICE_MATCH_MODE=name_suffix                 # name_suffix | tag | group
+ZOHO_SERVICE_MATCH_VALUE=SERVICE                     # suffix text, tag name, or group id
+
+# Optional template ids used at ticket creation. Leave blank to use Zoho defaults.
+# TODO(craig): fill if FHI uses fixed tasklist/status templates.
+ZOHO_TASKLIST_FLAG=internal                          # tasklist "flag": internal | external
+ZOHO_STATUS_OPEN_ID=                                 # status id treated as "open" (blank = derive by is_completed)
+ZOHO_STATUS_CLOSED_ID=                               # status id treated as "closed"/completed
+
+# --- Google Calendar auth -----------------------------------------------------
+# Two supported methods; pick with GOOGLE_AUTH_METHOD (also in wrangler.toml [vars]).
+GOOGLE_AUTH_METHOD=service_account                   # service_account (default) | oauth_user
+GOOGLE_CALENDAR_BASE=https://www.googleapis.com/calendar/v3
+GOOGLE_TOKEN_URI=https://oauth2.googleapis.com/token
+DEFAULT_CALENDAR_ID=notifications@fhiflorida.com     # Tech Schedule calendar
+
+# Method A — service account + domain-wide delegation (DEFAULT, recommended).
+# TODO(craig): create a GCP service account, enable domain-wide delegation in Workspace
+# Admin (scope https://www.googleapis.com/auth/calendar), and supply:
+GOOGLE_SA_CLIENT_EMAIL=svc-cal@your-project.iam.gserviceaccount.com
+GOOGLE_SA_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n"
+GOOGLE_SA_SUBJECT=notifications@fhiflorida.com       # Workspace user the SA impersonates
+
+# Method B — single shared OAuth user (ALTERNATIVE; used when GOOGLE_AUTH_METHOD=oauth_user).
+# TODO(craig): only fill if you choose the shared-user path instead of a service account.
+GOOGLE_OAUTH_CLIENT_ID=your-google-oauth-client-id
+GOOGLE_OAUTH_CLIENT_SECRET=your-google-oauth-client-secret
+GOOGLE_OAUTH_REFRESH_TOKEN=your-google-oauth-refresh-token
+
+# --- Worker / app -------------------------------------------------------------
+APP_ORIGIN=https://app.fhiflorida.com                # LV Plan app origin, for CORS. TODO(craig): confirm.
+WO_SEQUENCE_SCOPE=global                             # global | per_project

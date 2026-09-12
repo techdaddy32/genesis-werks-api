@@ -1,0 +1,171 @@
+#==============================================================================
+# FHI Service Work Order System — Cloudflare Worker config
+#==============================================================================
+# Deploy: `wrangler deploy`.  Local dev: `wrangler dev` (reads .dev.vars).
+# Secrets are NEVER stored here. Set them with `wrangler secret put <NAME>`.
+# See README.md → "BEFORE YOU DEPLOY" for the values a human must supply.
+#==============================================================================
+
+name = "fhi-service-wo"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+# nodejs_compat gives us TextEncoder/atob/etc. used by the Google JWT signer.
+compatibility_flags = ["nodejs_compat"]
+
+#------------------------------------------------------------------------------
+# KV — holds the atomic yearly WO sequence counter (see src/wonumber.ts).
+# TODO(craig): create the namespace and paste the real id below:
+#   wrangler kv:namespace create WO_KV
+#------------------------------------------------------------------------------
+[[kv_namespaces]]
+binding = "WO_KV"
+id = "aaeba18d5652455496657aa231210af4"          # created 2026-08-19 (WO_KV)
+preview_id = "aaeba18d5652455496657aa231210af4"  # reuse prod id for dev; create a --preview namespace later if you want isolation
+
+#------------------------------------------------------------------------------
+# Cron — the two-way calendar reconcile. Spec asks 5–15 min; we run every 10.
+# Wired to the scheduled() handler in src/index.ts (which calls POST /sync/calendar logic).
+#------------------------------------------------------------------------------
+[triggers]
+crons = ["*/10 * * * *"]
+
+#------------------------------------------------------------------------------
+# Non-secret vars. Safe to commit. Secrets go via `wrangler secret put` (see below).
+#------------------------------------------------------------------------------
+[vars]
+ZOHO_PORTAL_ID = "705869960"                       # fhiflorida32 portal (ground truth)
+ZOHO_API_BASE = "https://projectsapi.zoho.com/api/v3"
+ZOHO_ACCOUNTS_BASE = "https://accounts.zoho.com"    # DC = .com (US)
+DEFAULT_CALENDAR_ID = "notifications@fhiflorida.com" # Tech Schedule calendar
+GOOGLE_CALENDAR_BASE = "https://www.googleapis.com/calendar/v3"
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+GOOGLE_AUTH_METHOD = "oauth_user"                   # "service_account" | "oauth_user" (see .dev.vars.example)
+# Single origin, or a comma-separated allowlist (e.g. "https://a.com,https://b.com,http://localhost:5173").
+# Scheme+host only, no trailing slash. The Worker echoes whichever listed origin the request comes from.
+APP_ORIGIN = "https://fhi-plan-markup.onrender.com" # LV Plan markup app (Render) — confirmed 2026-08-19
+
+# Link put into calendar events to open the WO in the app. {id}=WO id, {wo}=WO number.
+# Default (if unset) = "<APP_ORIGIN>/work-orders/{id}". Set this to match the LV Plan app's real route.
+APP_WO_URL_TEMPLATE = "https://fhi-plan-markup.onrender.com/work-orders?id={id}"
+
+# WO sequence scope — see src/wonumber.ts. "global" = one portal-wide yearly counter.
+WO_SEQUENCE_SCOPE = "global"                        # "global" | "per_project"
+
+# Public URL of THIS deployed Worker. Daily-report PDFs are served BY this Worker
+# (Zoho v3 has no reliable task-attachment endpoint on our API base), so this must
+# point back at the Worker for the "Send daily report" PDF links to resolve.
+# TODO(craig): set this to the real deployed Worker URL after `wrangler deploy`.
+# PUBLIC_WORKER_URL = "https://fhi-service-wo.<subdomain>.workers.dev"
+
+# Optional: once /setup has stored Zoho creds in KV, reconfiguring via /setup requires this token.
+# Leave unset for first-time setup. To lock the page afterward, set any random string here.
+# SETUP_TOKEN = "choose-a-random-string"
+
+# PIN gating the /admin config endpoints (verify-pin, GET/PUT /admin/config).
+# Defaults to "3825" if unset; uncomment and change to set a different PIN here.
+# Can be promoted to a secret later via `wrangler secret put ADMIN_PIN` (a secret overrides this).
+# ADMIN_PIN = "3825"
+
+# --- The Zoho task custom-field that stores the full WO reference. Confirmed 2026-08-19. ---
+ZOHO_WO_FIELD = "work_order_hash"
+
+# PROJECT custom-field API name for the client's support membership level (surfaced
+# on the WO as membershipLevel). Default (if unset) = "support_membership_actual".
+# ZOHO_MEMBERSHIP_FIELD = "support_membership_actual"
+
+# --- Task status IDs (confirmed live 2026-08-22). This portal uses a CUSTOM status
+# workflow (Planning -> In Progress -> Finished ...), so the `is_completed` boolean is
+# silently ignored — completing a task requires setting a CLOSED-type status id. These
+# make setTaskCompleted use { status: { id } } instead of is_completed.
+#   Finished (is_closed_type=true) = 1545398000000616329
+#   Planning (open, default new-task status) = 1545398000000120013
+# NOTE: these are the portal's default statuses; if a specific service project ever uses
+# a different custom status set, completion for that project would need its own ids.
+ZOHO_STATUS_CLOSED_ID = "1545398000000616329"
+ZOHO_STATUS_OPEN_ID = "1545398000000120013"
+
+# Task custom fields that mirror the schedule into Zoho (confirmed API names 2026-08-21).
+ZOHO_VISITS_FIELD = "wo_schedule"           # multi-line text: visit data
+ZOHO_NEXTVISIT_FIELD = "wo_date_time"       # date-time: next visit
+ZOHO_SCHEDSTATUS_FIELD = "wo_schedule_status" # LEGACY pick-list (Not Scheduled | Scheduled | Needs Rescheduled) — scheduling label only since 2026-09-09
+# Zoho-native WO status model (2026-09-09). Defaults shown; option strings must match Zoho EXACTLY.
+#   wo_task_status  (Pending | Completed) — Work Order Tasks task, its subtasks, and the Billing task
+#   billing_status  (Billable | Non-Billable | Internal) — Billing task
+#   wo_cycle_status (Not Scheduled | Scheduled | Needs Reschedule | On Hold | Active Monitoring |
+#                    Ready for Billing | Waiting Payment | Completed(legacy, read as Closed) | Closed)
+#                   — on each WO's "Work Order Status" task (created at WO create; one-time migration
+#                     for older WOs: POST /admin/migrate-status?pin=..&apply=1)
+ZOHO_WO_TASK_STATUS_FIELD = "wo_task_status"
+ZOHO_BILLING_STATUS_FIELD = "billing_status"
+ZOHO_WO_CYCLE_STATUS_FIELD = "wo_cycle_status"
+ZOHO_USED_ITEMS_FIELD = "wo_used_items"     # plain text: JSON array of used items (materials/parts)
+# CompanyCam URL — a Zoho TASK custom field surfaced on the WO + included in the reports.
+# NO DEFAULT: the feature is OFF until this is set. Craig must set it to the EXACT api
+# field_name of his CompanyCam URL task field (feature no-ops while unset).
+# ZOHO_COMPANYCAM_FIELD = "companycam_url"
+# Provision-ticket URL — a Zoho TASK custom field (api name `provision`, URL or single-line
+# text) surfaced on the WO header as a clickable link. DEFAULTS to "provision" with no env
+# set, so leave this commented unless the field's api name differs. TOLERANT: if the field
+# doesn't exist in Zoho yet, writes no-op and reads return "" — the WO round-trips fine.
+# ZOHO_PROVISION_FIELD = "provision"
+
+# --- To-Dos / action items (per-WO "To-Dos" task holding todo subtasks). ---
+# The Zoho TASK pick-list custom-field api name that stores a to-do's STATUS. Default
+# (if unset) = "to_do_s" (UNDERSCORE — confirmed live on the WO 0026 payload). Pick-list
+# options: Open | Awaiting Feedback | On-Hold | Completed.
+# "Completed" ARCHIVES the todo (its subtask is closed → drops off the active list, still
+# viewable). The backend passes status values straight through to Zoho (which validates its
+# own pick-list) — it does NOT enforce this list. Default status on create = "Open". Each
+# todo also reuses `work_order_hash` (backlink to the WO#) and the native task priority
+# (none|low|medium|high) as its URGENCY; the ASSIGNEE is backend-managed (stored in the
+# subtask description token), not a Zoho field.
+ZOHO_TODO_STATUS_FIELD = "to_do_s"
+
+# --- Purchasing (parts request -> purchasing dashboard). Confirmed 2026-08-21. ---
+# The Zoho PROJECT id of FHI-907 (purchasing). Parts requested from a WO become
+# tasks here; each carries the `order_status` pick-list and reuses `work_order_hash`
+# to point back to the source WO. NOT a secret — this is just a project id.
+ZOHO_PURCHASING_PROJECT_ID = "1545398000015424003"
+# order_status pick-list options (Zoho, 7 labels — "Installed" re-added by Craig
+# 2026-08-22): Not Needed | Needed | On Order | Received | Backordered | Cancelled |
+# Installed. Default when a part is first requested = "Needed" (see src/config.ts
+# DEFAULT_ORDER_STATUS). NOTE: the backend no longer enforces this list — status values
+# are passed straight through to Zoho, which validates its own pick-list. This comment
+# is documentation only.
+ZOHO_ORDER_STATUS_FIELD = "order_status"
+# DONE set: order_status labels that count a requested part as DONE. This ONE set does
+# double duty — a DONE item (a) clears the WO-completion gate (so the WO can move to
+# billing/completed) AND (b) is ARCHIVED (its Zoho task is completed, so it drops off
+# the active purchasing list but stays viewable, never deleted; moving it back to a
+# non-done status reopens/un-archives it). A WO with requested parts in any OTHER
+# (PENDING) status — Needed | On Order | Received | Backordered — is blocked from
+# completing (HTTP 409). Comma-separated; default (if unset) = "Installed,Not Needed,
+# Cancelled". MUST match the exact Zoho order_status option labels.
+# ZOHO_ORDER_RESOLVED_STATUSES = "Installed,Not Needed,Cancelled"
+
+# --- AI (invoice-notes polish via the Anthropic Messages API). ---
+# Model for POST /work-orders/:id/invoice-notes. Default (if unset) = "claude-haiku-4-5-20251001".
+# AI_MODEL = "claude-haiku-4-5-20251001"
+
+#------------------------------------------------------------------------------
+# SECRETS — DO NOT put values here. Set each with `wrangler secret put <NAME>`:
+#   wrangler secret put ZOHO_REFRESH_TOKEN
+#   wrangler secret put ZOHO_CLIENT_ID
+#   wrangler secret put ZOHO_CLIENT_SECRET
+#   # Google — service-account method (default):
+#   wrangler secret put GOOGLE_SA_CLIENT_EMAIL
+#   wrangler secret put GOOGLE_SA_PRIVATE_KEY
+#   wrangler secret put GOOGLE_SA_SUBJECT           # user to impersonate (domain-wide delegation)
+#   # Google — shared-OAuth-user method (alternative):
+#   wrangler secret put GOOGLE_OAUTH_CLIENT_ID
+#   wrangler secret put GOOGLE_OAUTH_CLIENT_SECRET
+#   wrangler secret put GOOGLE_OAUTH_REFRESH_TOKEN
+#   # Zoho Cliq incoming-webhook URLs (best-effort notifications). SECRETS — never
+#   # commit these; the URL carries a zapikey. Both optional (a missing one no-ops):
+#   wrangler secret put CLIQ_MATERIALS_WEBHOOK    # parts/materials channel (part-request posts)
+#   wrangler secret put CLIQ_DAILY_WEBHOOK        # daily-digest channel (reserved)
+#   wrangler secret put CLIQ_REMINDERS_WEBHOOK    # action-item reminders (falls back to scheduling)
+#   wrangler secret put CLIQ_ACTIONITEMS_WEBHOOK  # Action Items channel — assign/reassign posts (S8)
+#   # Anthropic API key for the invoice-notes AI endpoint (POST /work-orders/:id/invoice-notes):
+#   wrangler secret put ANTHROPIC_API_KEY
+#------------------------------------------------------------------------------
