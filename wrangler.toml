@@ -6,7 +6,7 @@
 # See README.md → "BEFORE YOU DEPLOY" for the values a human must supply.
 #==============================================================================
 
-name = "fhi-service-wo"
+name = "genesis-api"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 # nodejs_compat gives us TextEncoder/atob/etc. used by the Google JWT signer.
