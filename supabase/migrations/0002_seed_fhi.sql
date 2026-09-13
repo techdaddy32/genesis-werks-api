@@ -61,9 +61,9 @@ INSERT INTO public.tenant_settings (tenant_id, key, value) VALUES
   ('f4100000-0000-4000-8000-000000000001', 'wo.sequence_scope',           to_jsonb('global'::text)),
   -- defaults stated in the model (§2.32) — ASSUMPTION that they still hold
   ('f4100000-0000-4000-8000-000000000001', 'app.timezone',                to_jsonb('America/New_York'::text)),
-  ('f4100000-0000-4000-8000-000000000001', 'admin.report_access',         '["craig@fhiflorida.com"]'::jsonb),
+  ('f4100000-0000-4000-8000-000000000001', 'admin.report_access',         '[]'::jsonb),  -- client fills in (Setup page)
   ('f4100000-0000-4000-8000-000000000001', 'admin.zoho_user_options',     '[]'::jsonb),
-  ('f4100000-0000-4000-8000-000000000001', 'admin.scheduling_confirmer',  to_jsonb('Angie Hartman'::text)),
+  ('f4100000-0000-4000-8000-000000000001', 'admin.scheduling_confirmer',  '[]'::jsonb),  -- empty; client fills in one or more names (Setup page)
   -- numbering (§8.10). work_order = confirmed FHI default; project / deal = ASSUMPTION
   ('f4100000-0000-4000-8000-000000000001', 'numbering.work_order',
      '{"pattern":"{projectKey}-WO-{YYYY}-{seq4}","scope":"global","pad":4,"yearly_reset":true}'::jsonb),
@@ -169,14 +169,13 @@ INSERT INTO public.status_vocab (tenant_id, domain, code, label, sort_order, is_
   ('f4100000-0000-4000-8000-000000000001', 'membership-type', 'Proactive',    'Proactive',    10, false, false, false, false, '{"assumption":true}'),
   ('f4100000-0000-4000-8000-000000000001', 'membership-type', 'Needs Update', 'Needs Update', 20, false, false, false, false, '{"assumption":true}'),
 
-  -- user_role (§8.6). ASSUMPTION on the exact set; `person` = the legacy "People"
+  -- user_role (§8.6, revised 2026-09-13): prefill technician/office/admin/sales; tenant-custom thereafter. (was: ASSUMPTION; `person` = the legacy "People"
   -- registry (to-do assignee picker), `technician` = calendar guests.
   ('f4100000-0000-4000-8000-000000000001', 'user_role', 'technician', 'Technician',                   10, false, false, false, false, '{}'),
-  ('f4100000-0000-4000-8000-000000000001', 'user_role', 'person',     'Person (to-do assignee)',      20, false, false, false, false, '{"legacy_registry":"people"}'),
-  ('f4100000-0000-4000-8000-000000000001', 'user_role', 'office',     'Office',                       30, false, false, false, false, '{}'),
-  ('f4100000-0000-4000-8000-000000000001', 'user_role', 'admin',      'Admin',                        40, false, false, false, false, '{}'),
-  ('f4100000-0000-4000-8000-000000000001', 'user_role', 'purchasing', 'Purchasing',                   50, false, false, false, false, '{}'),
-  ('f4100000-0000-4000-8000-000000000001', 'user_role', 'homeowner',  'Homeowner',                    60, false, false, false, false, '{}'),
+  ('f4100000-0000-4000-8000-000000000001', 'user_role', 'office',     'Office',                       20, false, false, false, false, '{}'),
+  ('f4100000-0000-4000-8000-000000000001', 'user_role', 'admin',      'Admin',                        30, false, false, false, false, '{}'),
+  ('f4100000-0000-4000-8000-000000000001', 'user_role', 'sales',      'Sales',                        40, false, false, false, false, '{}'),
+  -- Roles are tenant-custom (Craig 2026-09-13): these four are the prefill only. `homeowner` is added at P5a (portal); importers auto-create missing vocab rows.
 
   -- project_status / project_group / project_type — Smackdab sample values only;
   -- the full lists are harvested at migration (§8.8). ASSUMPTION.

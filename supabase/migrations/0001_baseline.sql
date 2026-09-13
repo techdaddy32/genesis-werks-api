@@ -308,7 +308,7 @@ CREATE TABLE IF NOT EXISTS public.user_roles (
   created_at  timestamptz NOT NULL DEFAULT now(),
   UNIQUE (tenant_id, user_id, role)
 );
-COMMENT ON TABLE public.user_roles IS 'Role categories per user (status_vocab domain user_role): technician, person, office, admin, homeowner, purchasing.';
+COMMENT ON TABLE public.user_roles IS 'Role categories per user. Roles are TENANT-CUSTOM rows in status_vocab domain user_role (prefilled: technician, office, admin, sales); clients add their own from the Setup page.';
 
 -- -----------------------------------------------------------------------------
 -- 4. CRM: accounts, contacts (deals follow projects because deals.project_id)
@@ -1579,9 +1579,8 @@ SELECT
   u.created_at,
   u.updated_at
 FROM public.users u
-JOIN public.user_roles r ON r.user_id = u.id AND r.role = 'person'
 WHERE u.deleted_at IS NULL;
-COMMENT ON VIEW public.v_people IS 'GET /people source (§8.6): users with role person, Person shape (email "" when unset).';
+COMMENT ON VIEW public.v_people IS 'GET /people source (§8.6): ALL non-deleted users regardless of role (roles are tenant-custom, so no fixed "person" role), Person shape (email "" when unset).';
 
 -- -----------------------------------------------------------------------------
 -- 12. Application role (optional but recommended): a NOBYPASSRLS role for
