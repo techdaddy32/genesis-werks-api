@@ -11,8 +11,8 @@ Run-list: `../pipeline/2026-09-12-suite-own-database-run-list.md`._
 | Cloudflare KV | `WO_KV` aaeba18d5652455496657aa231210af4 | LIVE, to be retired at F3 | counter, technicians, hours, daily-report entries |
 | Cloudflare R2 | `genesis-files` (ENAM, Standard) | CREATED 2026-09-12 (replaces the empty `suite-files`, deleted) | plan images / photos / PDFs; enable versioning (dashboard → bucket → Settings) |
 | Cloudflare R2 | `fhi-site-photos` (pre-existing, 2026-08-29) | LIVE | F-85 hub photo store — decide at P3a whether to merge into `genesis-files` or keep |
-| Cloudflare Hyperdrive | — | NOT YET | create after the Supabase project exists (needs its pooler connection string) |
-| Supabase | org "Horizon" · project `genesis-werks-prod` | NOT YET | Craig creates (see below) |
+| Cloudflare Hyperdrive | `genesis-db` id e33320e5f0794cbcacc064365b305746 → Supabase session pooler aws-0-us-east-1:5432 | CREATED 2026-09-13 | binding HYPERDRIVE in wrangler.toml |
+| Supabase | project `genesis-werks-prod`, ref gckxsyiuskifjhseuefg, us-east-1 | CREATED 2026-09-13 | connection string + service key in the secrets location (never here) |
 | GitHub | https://github.com/techdaddy32/genesis-werks-api (personal account; transfer to a Horizon org later if one is created) | PUSHED 2026-09-13 | main tracks origin/main |
 | Google Calendar | `notifications@fhiflorida.com` (Tech Schedule) | LIVE | unchanged |
 | Zoho Projects / CRM | portal 705869960 | LIVE (system of record until each module's cutover) | |

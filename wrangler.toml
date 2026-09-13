@@ -172,10 +172,10 @@ ZOHO_ORDER_STATUS_FIELD = "order_status"
 #------------------------------------------------------------------------------
 
 
-   [[hyperdrive]]
-   binding = "HYPERDRIVE"
-   id = "e33320e5f0794cbcacc064365b305746"
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "e33320e5f0794cbcacc064365b305746"
 
-   [[r2_buckets]]
-   binding = "FILES"
-   bucket_name = "genesis-files"
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "genesis-files"
