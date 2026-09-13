@@ -105,3 +105,131 @@ export function statusMatchesFilter(
       return true;
   }
 }
+
+//------------------------------------------------------------------------------
+// The 7-state WO status vocabulary + the pure helpers that map between it, the
+// legacy 3-state lifecycle and the scheduling states. Single-sourced here (P2)
+// so the Zoho path (service.ts) and the Postgres path (repo/work-orders.ts)
+// derive identical values. service.ts re-exports the public names.
+//------------------------------------------------------------------------------
+
+/** Auto (calendar-derived) statuses. */
+export const WO_STATUS_SCHEDULING = ["Not Scheduled", "Scheduled", "Needs Reschedule"] as const;
+/** Manual + sticky statuses (the back half). */
+export const WO_STATUS_BACK_HALF = ["On Hold", "Active Monitoring", "Ready for Billing", "Waiting Payment", "Closed"] as const;
+export const WO_STATUSES = [...WO_STATUS_SCHEDULING, ...WO_STATUS_BACK_HALF] as const;
+/** Statuses a client may SEND (legacy spellings are normalized by normalizeWoStatus). */
+export const WO_STATUS_INPUTS = [...WO_STATUSES, "Completed", "Needs Rescheduled"] as const;
+/** Pre-billing statuses: the ones the all-tasks-complete rule auto-advances from. */
+export const WO_STATUS_PRE_BILLING = [...WO_STATUS_SCHEDULING, "On Hold", "Active Monitoring"] as const;
+
+/** The app-facing scheduling label per ScheduleStatus (wo_cycle_status spelling). */
+export const CYCLE_STATUS_LABEL: Record<ScheduleStatus, string> = {
+  unscheduled: "Not Scheduled",
+  scheduled: "Scheduled",
+  needs_reschedule: "Needs Reschedule",
+};
+
+/** Normalize legacy / alternate spellings to the canonical label (Completed → Closed, Needs Rescheduled → Needs Reschedule). */
+export function normalizeWoStatus(s: string): string {
+  const t = (s ?? "").trim();
+  if (t === "Completed") return "Closed";
+  if (t === "Needs Rescheduled") return "Needs Reschedule";
+  return t;
+}
+
+/** Map a woStatus to the legacy lifecycle (which tasks are open/closed). */
+export function woStatusToLifecycle(s: string): WorkOrderStatus {
+  const n = normalizeWoStatus(s);
+  if (n === "Closed") return "completed";
+  if (n === "Ready for Billing" || n === "Waiting Payment") return "billing";
+  return "action"; // the three scheduling states + On Hold / Active Monitoring are all "active"
+}
+
+/** Lifecycle bucket for a woStatus label (board filters); unknown labels fall back to the derived lifecycle. */
+export function lifecycleOfWoStatus(woStatus: string, fallback: WorkOrderStatus): WorkOrderStatus {
+  const n = normalizeWoStatus(woStatus);
+  return (WO_STATUSES as readonly string[]).includes(n) ? woStatusToLifecycle(n) : fallback;
+}
+
+/** True when a (normalized) label is one of the manual, sticky back-half statuses. */
+export function isBackHalfStatus(s: string): boolean {
+  return (WO_STATUS_BACK_HALF as readonly string[]).includes(normalizeWoStatus(s));
+}
+
+/** True when a stored status is still pre-billing (or unset). */
+export function isPreBillingStatus(s: string): boolean {
+  const n = normalizeWoStatus(s);
+  return n === "" || (WO_STATUS_PRE_BILLING as readonly string[]).includes(n);
+}
+
+//------------------------------------------------------------------------------
+// Board search / sort / visit ordering — pure, shared by both paths.
+//------------------------------------------------------------------------------
+
+/** Minimal WO shape the board search needs. */
+export interface SearchableWo {
+  workOrderNumber: string;
+  client: string;
+  siteAddress: string | null;
+  subject: string;
+}
+
+/** Case-insensitive substring over WO#, client, site address, subject. Empty q = match all. */
+export function matchesQuery(wo: SearchableWo, q?: string): boolean {
+  const needle = (q ?? "").trim().toLowerCase();
+  if (!needle) return true;
+  return (
+    wo.workOrderNumber.toLowerCase().includes(needle) ||
+    wo.client.toLowerCase().includes(needle) ||
+    (wo.siteAddress ?? "").toLowerCase().includes(needle) ||
+    wo.subject.toLowerCase().includes(needle)
+  );
+}
+
+export interface SortableWo {
+  createdAt: string | null;
+  client: string;
+  priority: string | null;
+}
+
+/** newest = createdAt desc (string compare) · oldest asc · client localeCompare · priority rank. */
+export function sortWorkOrders<T extends SortableWo>(list: T[], sort: "newest" | "oldest" | "client" | "priority"): T[] {
+  const arr = [...list];
+  switch (sort) {
+    case "oldest":
+      return arr.sort((a, b) => cmpStr(a.createdAt, b.createdAt));
+    case "client":
+      return arr.sort((a, b) => a.client.localeCompare(b.client));
+    case "priority":
+      return arr.sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority));
+    case "newest":
+    default:
+      return arr.sort((a, b) => cmpStr(b.createdAt, a.createdAt));
+  }
+}
+function cmpStr(a: string | null, b: string | null): number {
+  return String(a ?? "").localeCompare(String(b ?? ""));
+}
+export function priorityRank(p: string | null): number {
+  switch ((p ?? "").toLowerCase()) {
+    case "high":
+      return 0;
+    case "medium":
+      return 1;
+    case "low":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
+/** Sort visits by start ascending; visits with no start sort last. */
+export function sortVisits<T extends { start: string | null }>(visits: T[]): T[] {
+  return [...visits].sort((a, b) => {
+    if (a.start === b.start) return 0;
+    if (!a.start) return 1;
+    if (!b.start) return -1;
+    return a.start.localeCompare(b.start);
+  });
+}

@@ -18,9 +18,10 @@
 // (F2 decision 2).
 //==============================================================================
 
-import { DbError, type Tx } from "../db";
+import { DbError, isUuid, type Tx } from "../db";
 import { ZOHO_SYSTEMS } from "../backend";
 import { parseWoNumber } from "../wonumber";
+import { validateCustom, type FieldError } from "../field-definitions";
 
 export { tenantOf } from "../tenant";
 
@@ -31,6 +32,40 @@ export const API_ACTOR = "system:api";
 export function iso(v: Date | string | null | undefined): string | null {
   if (v === null || v === undefined) return null;
   return v instanceof Date ? v.toISOString() : new Date(v).toISOString();
+}
+
+/**
+ * Parse a text[] the driver hands back as a Postgres array literal ("{a,b}") —
+ * db.ts runs with fetch_types:false (Hyperdrive), so arrays are not decoded.
+ * Already-decoded arrays pass through; NULL → [].
+ */
+export function pgTextArray(v: unknown): string[] {
+  if (v === null || v === undefined) return [];
+  if (Array.isArray(v)) return v.map((x) => String(x));
+  const s = String(v).trim();
+  if (!s.startsWith("{") || !s.endsWith("}")) return s ? [s] : [];
+  const body = s.slice(1, -1);
+  if (!body) return [];
+  const out: string[] = [];
+  let cur = "";
+  let quoted = false;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (quoted) {
+      if (c === "\\") { cur += body[++i] ?? ""; continue; }
+      if (c === '"') { quoted = false; continue; }
+      cur += c;
+    } else if (c === '"') {
+      quoted = true;
+    } else if (c === ",") {
+      out.push(cur);
+      cur = "";
+    } else {
+      cur += c;
+    }
+  }
+  out.push(cur);
+  return out.map((x) => (x === "NULL" ? "" : x)).filter((x) => x !== "");
 }
 
 //------------------------------------------------------------------------------
@@ -147,9 +182,23 @@ async function ensureUnmappedProject(tx: Tx): Promise<string> {
   return ins[0].id;
 }
 
-/** work_orders.id for a Zoho Action task id, or null when no row (shadow or real) exists yet. */
+/**
+ * work_orders.id for a wire WorkOrder.id, or null when no row exists yet.
+ * P2: the id is EITHER our own uuid (Postgres-backed tenants — the row is looked
+ * up directly) OR a Zoho Action task id (external_ids), so hours / daily-report
+ * writes work on both paths with the same call.
+ */
 export async function findWorkOrderRef(tx: Tx, actionTaskId: string): Promise<string | null> {
-  return findByExternalId(tx, "work_order", ZOHO_SYSTEMS.work_order, String(actionTaskId || "").trim());
+  const id = String(actionTaskId || "").trim();
+  if (!id) return null;
+  if (isUuid(id)) {
+    const rows = await tx<{ id: string }[]>`
+      select id from public.work_orders
+      where tenant_id = public.app_tenant_id() and id = ${id} and deleted_at is null
+      limit 1`;
+    if (rows.length) return rows[0].id;
+  }
+  return findByExternalId(tx, "work_order", ZOHO_SYSTEMS.work_order, id);
 }
 
 /** work_orders.id for a Zoho-era WO, creating the shadow project + WO rows on first sight. */
@@ -157,7 +206,7 @@ export async function ensureWorkOrderRef(tx: Tx, ref: WoRef): Promise<string> {
   const system = ZOHO_SYSTEMS.work_order;
   const tid = String(ref.actionTaskId || "").trim();
   if (!tid) throw new DbError("ensureWorkOrderRef: actionTaskId is required");
-  const found = await findByExternalId(tx, "work_order", system, tid);
+  const found = await findWorkOrderRef(tx, tid);
   if (found) return found;
 
   const projectId = ref.zohoProjectId
@@ -230,4 +279,57 @@ export async function ensureActionItemRef(tx: Tx, ref: { issueId: string; title?
 
 export async function findActionItemRef(tx: Tx, issueId: string): Promise<string | null> {
   return findByExternalId(tx, "action_item", ZOHO_SYSTEMS.action_item, String(issueId || "").trim());
+}
+
+//------------------------------------------------------------------------------
+// Custom fields (P2, data-model §8.11) — every write that carries `custom`
+// validates it against field_definitions before persisting.
+//------------------------------------------------------------------------------
+
+/** Thrown when a `custom` payload fails field_definitions validation (router → 400). */
+export class CustomFieldError extends Error {
+  constructor(public readonly errors: FieldError[]) {
+    super(`invalid custom fields: ${errors.map((e) => `${e.key}: ${e.message}`).join("; ")}`);
+    this.name = "CustomFieldError";
+  }
+}
+
+/** True when `v` looks like a custom payload (a plain object). */
+export function isCustomObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * Merge a patch onto the stored custom object (shallow; null deletes a key) and
+ * validate the RESULT against the entity's field_definitions. Keys starting with
+ * "_" are system markers (e.g. `_shadow`) and are carried through unvalidated.
+ * Returns the object to store.
+ */
+export async function mergeAndValidateCustom(
+  tx: Tx,
+  entity: string,
+  existing: Record<string, unknown> | null | undefined,
+  patch: unknown
+): Promise<Record<string, unknown>> {
+  if (patch !== undefined && !isCustomObject(patch)) {
+    throw new CustomFieldError([{ key: "custom", code: "type", message: "custom must be an object" }]);
+  }
+  const merged: Record<string, unknown> = { ...(existing ?? {}) };
+  for (const [k, v] of Object.entries(patch ?? {})) {
+    if (v === null || v === undefined) delete merged[k];
+    else merged[k] = v;
+  }
+  const toValidate: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(merged)) if (!k.startsWith("_")) toValidate[k] = v;
+  const r = await validateCustom(tx, entity, toValidate);
+  if (!r.ok) throw new CustomFieldError(r.errors);
+  return merged;
+}
+
+/** The wire `custom` value: always an object, system "_" keys hidden. */
+export function customOut(v: unknown): Record<string, unknown> {
+  if (!isCustomObject(v)) return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v)) if (!k.startsWith("_")) out[k] = val;
+  return out;
 }

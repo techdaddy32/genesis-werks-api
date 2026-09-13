@@ -47,7 +47,18 @@ import * as zoho from "./zoho";
 import { ZohoThrottleError } from "./zoho";
 import { cached, cacheDelete, cacheDropPrefix } from "./cache";
 import * as cal from "./calendar";
-import { deriveStatus, statusMatchesFilter, deriveScheduleStatus } from "./status";
+import {
+  deriveStatus, statusMatchesFilter, deriveScheduleStatus,
+  CYCLE_STATUS_LABEL, WO_STATUS_BACK_HALF, WO_STATUS_PRE_BILLING,
+  normalizeWoStatus, woStatusToLifecycle, lifecycleOfWoStatus, matchesQuery, sortWorkOrders, sortVisits,
+} from "./status";
+import { isPostgresBackend } from "./backend-mode";
+import * as pgProjects from "./repo/projects";
+import * as pgWo from "./repo/work-orders";
+import * as pgVisits from "./repo/visits";
+import * as pgItems from "./repo/items";
+import * as pgTodos from "./repo/todos";
+import * as pgMaterials from "./repo/materials";
 import { mintWorkOrderNumber, parseWoNumber } from "./wonumber";
 import { woFieldName, orderStatusFieldName, membershipFieldName, companyCamFieldName, provisionFieldName, woTypeFieldName, orderDoneStatuses, DEFAULT_ORDER_STATUS, todoStatusFieldName, DEFAULT_TODO_STATUS,
   woTaskStatusFieldName, billingStatusFieldName, woCycleStatusFieldName, TASK_STATUS_PENDING, TASK_STATUS_COMPLETED, BILLING_STATUSES, DEFAULT_BILLING_STATUS } from "./config";
@@ -89,14 +100,11 @@ const ACTION_ITEMS_HOLDER_NAMES = [ACTION_ITEMS_TASK_NAME, TODOS_TASK_NAME];
  * Thrown by updateWorkOrder when a WO can't be moved to billing/completed because
  * it still has requested parts that aren't resolved. Distinguishable so index.ts
  * maps it to HTTP 409 (conflict) with the user-facing message. See the completion
- * gate in updateWorkOrder + assertRequestedPartsResolved.
+ * gate in updateWorkOrder + assertRequestedPartsResolved. P2: defined once in
+ * repo/work-orders.ts (the Postgres path throws the same class).
  */
-export class CompletionGateError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "CompletionGateError";
-  }
-}
+export { CompletionGateError } from "./repo/work-orders";
+import { CompletionGateError } from "./repo/work-orders";
 
 /**
  * Build the "open this work order" deep link that goes into calendar events.
@@ -125,46 +133,11 @@ const SCHEDULE_STATUS_LABEL: Record<ScheduleStatus, string> = {
   needs_reschedule: "Needs Rescheduled",
 };
 // The `wo_cycle_status` pick-list (per Craig 2026-09-09) spells it "Needs Reschedule". This is
-// the app-facing label set from now on.
-const CYCLE_STATUS_LABEL: Record<ScheduleStatus, string> = {
-  unscheduled: "Not Scheduled",
-  scheduled: "Scheduled",
-  needs_reschedule: "Needs Reschedule",
-};
-
-// The WO status model (2026-09-09, stored in Zoho as `wo_cycle_status` on the "Work Order
-// Status" task). The first three are AUTO (derived from the calendar); the back half is
-// MANUAL + sticky. "Closed" is the single terminal state — the legacy "Completed" migrates
-// to it and is no longer offered (the pick-list still lists it; we read it as Closed).
-const WO_STATUS_SCHEDULING = ["Not Scheduled", "Scheduled", "Needs Reschedule"] as const;
-const WO_STATUS_BACK_HALF = ["On Hold", "Active Monitoring", "Ready for Billing", "Waiting Payment", "Closed"] as const;
-export const WO_STATUSES = [...WO_STATUS_SCHEDULING, ...WO_STATUS_BACK_HALF] as const;
-/** Statuses that a client may SEND (legacy spellings are normalized by normalizeWoStatus). */
-export const WO_STATUS_INPUTS = [...WO_STATUSES, "Completed", "Needs Rescheduled"] as const;
-/** Pre-billing statuses: the ones the all-tasks-complete rule auto-advances from. */
-const WO_STATUS_PRE_BILLING = [...WO_STATUS_SCHEDULING, "On Hold", "Active Monitoring"] as const;
-
-/** Normalize legacy / alternate spellings to the canonical wo_cycle_status label. */
-export function normalizeWoStatus(s: string): string {
-  const t = (s ?? "").trim();
-  if (t === "Completed") return "Closed";
-  if (t === "Needs Rescheduled") return "Needs Reschedule";
-  return t;
-}
-
-/** Map a woStatus to the legacy lifecycle (which tasks are open/closed). */
-function woStatusToLifecycle(s: string): WorkOrderStatus {
-  const n = normalizeWoStatus(s);
-  if (n === "Closed") return "completed";
-  if (n === "Ready for Billing" || n === "Waiting Payment") return "billing";
-  return "action"; // the three scheduling states + On Hold / Active Monitoring are all "active"
-}
-
-/** Lifecycle bucket for a woStatus label (board filters); unknown labels fall back to the derived lifecycle. */
-function lifecycleOfWoStatus(woStatus: string, fallback: WorkOrderStatus): WorkOrderStatus {
-  const n = normalizeWoStatus(woStatus);
-  return (WO_STATUSES as readonly string[]).includes(n) ? woStatusToLifecycle(n) : fallback;
-}
+// the app-facing label set from now on. P2: the vocabulary + the pure mapping helpers
+// (normalizeWoStatus / woStatusToLifecycle / lifecycleOfWoStatus / CYCLE_STATUS_LABEL) now live
+// in status.ts so the Postgres path (repo/work-orders.ts) shares them; re-exported here
+// unchanged for existing importers.
+export { WO_STATUSES, WO_STATUS_INPUTS, normalizeWoStatus } from "./status";
 
 /** Read a task pick-list value (portal `raw` first, then the normalized customFields map). */
 function taskField(task: zoho.ZohoTask | null | undefined, field: string): string {
@@ -370,6 +343,8 @@ const VISITS_SECTION_RE = /\n*── Scheduled Visits ──[\s\S]*$/;
 // CREATE
 //------------------------------------------------------------------------------
 export async function createWorkOrder(env: Env, input: CreateWorkOrderInput): Promise<WorkOrder> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgWo.createWorkOrder(env, input);
   const project = await zoho.getProject(env, input.projectId);
   if (!project.key) {
     throw new Error(`Project ${input.projectId} has no key; cannot mint a WO number.`);
@@ -616,6 +591,8 @@ export async function listWorkOrders(
   env: Env,
   opts: { filter: WorkOrderFilter; q?: string; sort: WorkOrderSort; schedule?: ScheduleStatus }
 ): Promise<WorkOrder[]> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgWo.listWorkOrders(env, opts);
   // ONE portal-wide query instead of scanning every project (which times out at
   // ~250 projects). Filter on the work_order_hash column: every real WO reference
   // (e.g. FHI-672-WO-2026-0001) contains "-WO-", so this returns exactly the WO
@@ -664,6 +641,8 @@ export interface ProjectHit {
   // Null when the project has no membership set. Surfaced so the Projects dashboard can show
   // it per-row without deriving it from work orders (the light WO list carries it as null).
   membershipLevel: string | null;
+  /** P2 — additive: tenant custom fields (Postgres path only; absent on the Zoho path). */
+  custom?: Record<string, unknown>;
 }
 
 /**
@@ -675,6 +654,8 @@ export async function searchProjects(
   env: Env,
   opts: { q: string; includeAll?: boolean; refresh?: boolean }
 ): Promise<ProjectHit[]> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgProjects.listProjects(env, { q: opts.q, includeAll: opts.includeAll });
   // Rate-limit relief (2026-09-03): the full list (q="") is what the Projects tab, the WO board
   // (membership badges) and the New-WO picker all load, and it can fan out into ~40 detail
   // back-fills. Cache the finished result (fresh 2 min, stale kept 30 min for throttle fallback);
@@ -780,6 +761,8 @@ export async function getWorkOrder(
   actionTaskId: string,
   opts: { allowCached?: boolean } = {}
 ): Promise<WorkOrder | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgWo.getWorkOrder(env, actionTaskId);
   // Rate-limit relief (2026-09-03, pass 3): READ paths may answer both portal filters (this task
   // by id, and this WO's tagged subtasks by hash) from the cached "-WO-" scan — the same portal
   // endpoint/fields, so the rows are identical. Live fallback when the task isn't in the scan
@@ -977,6 +960,8 @@ export async function migrateStatusModel(
   env: Env,
   opts: { apply: boolean; limit: number; onlyId?: string }
 ): Promise<MigrationReport> {
+  // P2: nothing to migrate on Postgres — the one-time Zoho tool reports an empty run.
+  if (await isPostgresBackend(env)) return { dryRun: !opts.apply, total: 0, pending: 0, processed: 0, rows: [] };
   const tasks = await listWoTaggedTasks(env, { refresh: true });
   const grouped = groupTicketsFromTasks(tasks);
   const taskStatusField = woTaskStatusFieldName(env);
@@ -1076,6 +1061,8 @@ export async function migrateStatusModel(
  *   - Subtasks: field write only; the app marks the parent Completed when the last one is done.
  */
 export async function setTaskStatus(env: Env, actionTaskId: string, taskId: string, taskStatus: string): Promise<TaskStatusResult | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgWo.setTaskStatus(env, actionTaskId, taskId, taskStatus);
   const existing = await getWorkOrder(env, actionTaskId, { allowCached: true });
   if (!existing) return null;
   const projectId = existing.projectId;
@@ -1110,6 +1097,8 @@ export async function setTaskStatus(env: Env, actionTaskId: string, taskId: stri
 // DELETE / CANCEL  (removes the WO's ticket task list + its calendar events)
 //------------------------------------------------------------------------------
 export async function deleteWorkOrder(env: Env, actionTaskId: string): Promise<boolean> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgWo.deleteWorkOrder(env, actionTaskId);
   const wo = await getWorkOrder(env, actionTaskId);
   if (!wo) return false;
 
@@ -1140,6 +1129,8 @@ export async function updateWorkOrder(
   actionTaskId: string,
   patch: UpdateWorkOrderInput
 ): Promise<WorkOrder | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgWo.updateWorkOrder(env, actionTaskId, patch);
   // Pre-read may come from the cached scan (ids, current status, visits); the post-write
   // re-hydrate below stays LIVE so the returned WO reflects this request's writes.
   const existing = await getWorkOrder(env, actionTaskId, { allowCached: true });
@@ -1609,6 +1600,8 @@ export async function addVisit(
   actionTaskId: string,
   input: AddVisitInput
 ): Promise<WorkOrder | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgVisits.addVisit(env, actionTaskId, input);
   const existing = await getWorkOrder(env, actionTaskId);
   if (!existing) return null;
 
@@ -1714,6 +1707,8 @@ export async function confirmVisit(
   actionTaskId: string,
   visitId: string
 ): Promise<WorkOrder | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgVisits.confirmVisit(env, actionTaskId, visitId);
   const existing = await getWorkOrder(env, actionTaskId);
   if (!existing) return null;
   const idx = existing.visits.findIndex((v) => v.id === visitId);
@@ -1782,6 +1777,8 @@ export async function updateVisit(
   visitId: string,
   patch: UpdateVisitInput
 ): Promise<WorkOrder | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgVisits.updateVisit(env, actionTaskId, visitId, patch);
   const existing = await getWorkOrder(env, actionTaskId);
   if (!existing) return null;
   const idx = existing.visits.findIndex((v) => v.id === visitId);
@@ -1854,6 +1851,8 @@ export async function removeVisit(
   actionTaskId: string,
   visitId: string
 ): Promise<WorkOrder | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgVisits.removeVisit(env, actionTaskId, visitId);
   const existing = await getWorkOrder(env, actionTaskId);
   if (!existing) return null;
   const target = existing.visits.find((v) => v.id === visitId);
@@ -1883,6 +1882,9 @@ export async function removeVisit(
 // so a WO-side override can win. See README "Two-way sync model".
 //------------------------------------------------------------------------------
 export async function reconcileCalendar(env: Env): Promise<SyncResult> {
+  // P2: the reconcile walks Zoho tasks; on a Postgres-backed tenant there is nothing to scan yet
+  // (visits are rows; a calendar→visits reconcile is a later row — see P2-NOTES.md gaps).
+  if (await isPostgresBackend(env)) return { scanned: 0, reconciled: 0, conflicts: 0, details: [] };
   const result: SyncResult = { scanned: 0, reconciled: 0, conflicts: 0, details: [] };
 
   // Look back a window a bit larger than the cron interval to avoid missing edits.
@@ -2108,6 +2110,8 @@ export async function logHours(
 
 /** Delete an item (a purchasing task). Returns true (idempotent — a missing task is fine). */
 export async function deleteItem(env: Env, itemId: string): Promise<boolean> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgItems.deleteItem(env, itemId);
   await zoho.deletePurchaseTask(env, itemId);
   return true;
 }
@@ -2278,7 +2282,7 @@ export async function sendDailyReport(
 
   // Best-effort Zoho record: a dated subtask under the WO's Daily Report task, with
   // the compiled text (+ the PDF link) as its description. Non-fatal.
-  if (wo.dailyReportTaskId) {
+  if (wo.dailyReportTaskId && !(await isPostgresBackend(env))) {
     try {
       const desc = pdfUrl ? `${text}\n\nPDF: ${pdfUrl}` : text;
       await zoho.createTask(env, wo.projectId, {
@@ -2325,7 +2329,7 @@ export async function sendCumulativeReport(
   const pdfUrl = dailyRepo.pdfUrlFor(env, actionTaskId, dailyRepo.CUMULATIVE);
   await dailyRepo.markSent(env, woRefOf(wo), dailyRepo.CUMULATIVE, pdf, pdfUrl);
 
-  if (wo.dailyReportTaskId) {
+  if (wo.dailyReportTaskId && !(await isPostgresBackend(env))) {
     try {
       const desc = pdfUrl ? `${text}\n\nPDF: ${pdfUrl}` : text;
       await zoho.createTask(env, wo.projectId, {
@@ -2865,6 +2869,8 @@ export async function addItem(
   actionTaskId: string,
   input: { item: string; quantity?: number; note?: string; status?: string }
 ): Promise<PurchaseItem | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgItems.addItem(env, actionTaskId, input);
   const wo = await getWorkOrder(env, actionTaskId);
   if (!wo) return null;
 
@@ -2938,6 +2944,8 @@ export async function requestItem(
  * together, filtered by status client-side. Ordered by createdAt.
  */
 export async function listItemsForWo(env: Env, actionTaskId: string): Promise<PurchaseItem[]> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgItems.listItemsForWo(env, actionTaskId);
   // Reuse the dashboard query (proven work_order_hash portal filter), then keep this WO's items.
   const all = await listPurchasing(env, undefined, true);
   return all
@@ -3078,6 +3086,8 @@ export async function addMaterial(
   actionTaskId: string,
   input: CreateMaterialInput
 ): Promise<Material | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgMaterials.addMaterial(env, actionTaskId, input);
   const wo = await getWorkOrder(env, actionTaskId, { allowCached: true });
   if (!wo) return null;
   return createMaterialForWo(env, wo, {
@@ -3089,6 +3099,8 @@ export async function addMaterial(
 }
 /** List a WO's materials (its Materials-holder subtasks), oldest first. */
 export async function listMaterialsForWo(env: Env, actionTaskId: string, _knownProjectId?: string | null): Promise<Material[]> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgMaterials.listMaterials(env, actionTaskId);
   // FIX (2026-09-12, "added material never shows"): materials are SUBTASKS, and the per-project
   // /tasks listing (getTasksByProject) returns TOP-LEVEL tasks only — so every material was
   // invisible right after Add. Use the proven work_order_hash portal filter (cached; the router
@@ -3109,6 +3121,8 @@ export async function updateMaterial(
   materialId: string,
   patch: UpdateMaterialInput
 ): Promise<Material | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgMaterials.updateMaterial(env, actionTaskId, materialId, patch);
   const wo = await getWorkOrder(env, actionTaskId);
   if (!wo) return null;
   if (typeof patch.completed === "boolean") {
@@ -3123,6 +3137,8 @@ export async function updateMaterial(
 }
 /** Delete a material subtask. Returns false only when the WO itself is gone. */
 export async function deleteMaterial(env: Env, actionTaskId: string, materialId: string): Promise<boolean> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgMaterials.deleteMaterial(env, actionTaskId, materialId);
   const wo = await getWorkOrder(env, actionTaskId);
   if (!wo) return false;
   await zoho.deleteTask(env, wo.projectId, materialId);
@@ -3143,6 +3159,8 @@ export async function listPurchasing(
   statusFilter?: string,
   includeArchived = false
 ): Promise<PurchaseItem[]> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgItems.listPurchasing(env, statusFilter, includeArchived);
   const tasks = await listWoTaggedTasks(env);
   let items = tasks.filter((t) => isItemSubtask(env, t)).map((t) => purchaseItemFromTask(env, t, null));
   if (!includeArchived) items = items.filter((i) => i.archived !== true);
@@ -3162,6 +3180,8 @@ export async function updatePurchase(
   taskId: string,
   patch: UpdatePurchaseInput
 ): Promise<PurchaseItem | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgItems.updateItem(env, taskId, patch);
   const found = await zoho.listPortalTasksByFilter(
     env,
     JSON.stringify({ criteria: [{ field_name: "id", criteria_condition: "is", value: [taskId] }], pattern: "1" })
@@ -3380,6 +3400,8 @@ export async function addTodo(
   actionTaskId: string,
   input: CreateTodoInput
 ): Promise<Todo | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgTodos.addTodo(env, actionTaskId, input);
   const wo = await getWorkOrder(env, actionTaskId);
   if (!wo) return null;
 
@@ -3437,6 +3459,8 @@ export async function listTodos(
   actionTaskId: string,
   includeArchived = false
 ): Promise<Todo[]> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgTodos.listTodos(env, actionTaskId, includeArchived);
   // Reuse the central dashboard query (proven work_order_hash portal filter), then keep this
   // WO's todos (matched by the token's workOrderId) — mirrors listItemsForWo reusing listPurchasing.
   const all = await listAllTodos(env, { includeArchived });
@@ -3455,6 +3479,8 @@ export async function updateTodo(
   todoId: string,
   patch: UpdateTodoInput
 ): Promise<Todo | null> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgTodos.updateTodo(env, actionTaskId, todoId, patch);
   // Locate the todo subtask by id via the proven portal filter (not has_parents), like
   // updatePurchase — this yields its projectId directly.
   const found = await zoho.listPortalTasksByFilter(
@@ -3520,6 +3546,8 @@ export async function listAllTodos(
   env: Env,
   opts: { includeArchived?: boolean; assignee?: string; status?: string; urgency?: string } = {}
 ): Promise<Todo[]> {
+  // P2: Postgres-backed tenant → repo (no Zoho). Zoho path below is unchanged.
+  if (await isPostgresBackend(env)) return pgTodos.listAllTodos(env, opts);
   // Proven work_order_hash portal filter (contains "-WO-") — NOT has_parents/getPortalSubtasks,
   // which didn't return subtasks live (the items-dashboard bug). Todo subtasks carry
   // work_order_hash (tagged on create), so the filter returns them; keep those with a to_do-s
@@ -3896,9 +3924,12 @@ function accessCodesFromProject(project: zoho.ZohoProject): AccessCodes {
  * (config.membershipFieldName, default "support_membership_actual").
  */
 /** Write a project's support-membership level (S1b — editable on the Projects dashboard). */
-export async function setProjectMembership(env: Env, projectId: string, value: string): Promise<void> {
+export async function setProjectMembership(env: Env, projectId: string, value: string): Promise<boolean> {
+  // P2: Postgres-backed tenant → projects.membership_level (false = unknown project → 404).
+  if (await isPostgresBackend(env)) return pgProjects.setProjectMembership(env, projectId, value);
   await zoho.updateProjectFields(env, projectId, { [membershipFieldName(env)]: value });
   await invalidateProjectCaches(env, projectId);
+  return true;
 }
 
 function membershipFromProject(env: Env, project: zoho.ZohoProject): string | null {
@@ -3917,46 +3948,7 @@ function formatAccessCodes(c: AccessCodes): string | null {
   return parts.length ? parts.join(" / ") : null;
 }
 
-function matchesQuery(wo: WorkOrder, q?: string): boolean {
-  const needle = (q ?? "").trim().toLowerCase();
-  if (!needle) return true; // empty/missing/whitespace-only q = no search filter
-  return (
-    wo.workOrderNumber.toLowerCase().includes(needle) ||
-    wo.client.toLowerCase().includes(needle) ||
-    (wo.siteAddress ?? "").toLowerCase().includes(needle) ||
-    wo.subject.toLowerCase().includes(needle)
-  );
-}
-
-function sortWorkOrders(list: WorkOrder[], sort: WorkOrderSort): WorkOrder[] {
-  const arr = [...list];
-  switch (sort) {
-    case "oldest":
-      return arr.sort((a, b) => cmp(a.createdAt, b.createdAt));
-    case "client":
-      return arr.sort((a, b) => a.client.localeCompare(b.client));
-    case "priority":
-      return arr.sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority));
-    case "newest":
-    default:
-      return arr.sort((a, b) => cmp(b.createdAt, a.createdAt));
-  }
-}
-function cmp(a: string | null, b: string | null): number {
-  return String(a ?? "").localeCompare(String(b ?? ""));
-}
-function priorityRank(p: string | null): number {
-  switch ((p ?? "").toLowerCase()) {
-    case "high":
-      return 0;
-    case "medium":
-      return 1;
-    case "low":
-      return 2;
-    default:
-      return 3;
-  }
-}
+// P2: matchesQuery / sortWorkOrders / priorityRank live in status.ts (shared with the Postgres path).
 
 // --- legacy event-meta trailer (READ-ONLY now: used only for migration) ---
 function readEventMeta(desc: string): EventMeta | null {
@@ -4082,15 +4074,7 @@ function scheduleFromVisits(env: Env, visits: Visit[]): Schedule {
   };
 }
 
-/** Sort visits by start ascending; visits with no start sort last. */
-function sortVisits(visits: Visit[]): Visit[] {
-  return [...visits].sort((a, b) => {
-    if (a.start === b.start) return 0;
-    if (!a.start) return 1;
-    if (!b.start) return -1;
-    return a.start.localeCompare(b.start);
-  });
-}
+// P2: sortVisits lives in status.ts (shared with the Postgres path).
 
 /** The earliest visit (by start), or null when there are none. */
 function earliestVisit(visits: Visit[]): Visit | null {

@@ -74,8 +74,15 @@ Rollback: redeploy the previous commit (KV binding returns; the KV data was neve
 | FHI Florida | `f4100000-0000-4000-8000-000000000001` | `fhi` | production tenant (0002_seed_fhi.sql); `TENANT_ID` in wrangler.toml |
 | Genesis Sandbox | `f4100000-0000-4000-8000-000000000002` | `sandbox` | SB1 (2026-09-13): fictional play tenant seeded by `supabase/migrations/0003_seed_sandbox.sql`; safe on prod (touches only its own rows). Wipe + reseed: `DATABASE_URL=<owner url> npx tsx scripts/reset-sandbox.ts` (`--counts`, `--wipe-only`, `--i-know` when the DB name contains `prod`). Serve it with `TENANT_ID=f4100000-0000-4000-8000-000000000002` on a separate Worker/preview, never by changing the FHI deployment's var. |
 
+## Backend mode per tenant (P2, 2026-09-13)
+`tenant_settings` key **`backend.mode`** (`supabase/migrations/0004_backend_mode.sql`) decides which store serves the project / work-order / task / visit / item / todo / material routes: `postgres` → `src/repo/*` (no Zoho, no Google unless a calendar is configured); anything else / absent → the unchanged Zoho code in `service.ts`. FHI = `zoho`, sandbox = `postgres`. The Worker caches the answer 30 s per tenant. **Cutover (P3a, after the import):** `update tenant_settings set value = to_jsonb('postgres'::text) where tenant_id = '<fhi>' and key = 'backend.mode'` — reversible the same way. Route coverage table: `P2-NOTES.md`.
+
+Calendar on the Postgres path is a side effect gated by `tenant_settings` `calendar.default_address` (+ optional `calendar.enabled = false` to switch it off): unset → visits are plain rows (the sandbox); set → Google events are inserted / patched / deleted as before.
+
 ## Deploy
 `npx wrangler deploy` from this folder on Craig's machine. Full steps: `DEPLOY.md` (to be rewritten at OPS2).
+
+**Sandbox Worker (P2):** `npx wrangler deploy --env sandbox` publishes `genesis-api-sandbox` bound to the sandbox tenant (`[env.sandbox]` in `wrangler.toml`: TENANT_ID, APP_ORIGIN = https://genesis-sandbox.pages.dev, same Hyperdrive + R2, NO Zoho / Google vars). wrangler does not inherit bindings into a named env, so every binding is repeated there. Point the Allspark SWO page at that Worker's URL; set `PUBLIC_WORKER_URL` in `[env.sandbox.vars]` afterwards for daily-report PDF links. Apply `0004_backend_mode.sql` before the first sandbox request (without it the sandbox falls back to the Zoho path, which has nothing to talk to).
 
 ## Git
 Repo root = this folder. Commit after every run-list row; push to GitHub `main`.

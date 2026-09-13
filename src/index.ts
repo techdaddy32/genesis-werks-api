@@ -59,6 +59,7 @@ import { TechnicianError } from "./repo/technicians";
 import * as people from "./repo/people";
 import { PersonError } from "./repo/people";
 import { DailyReportError } from "./repo/daily-reports";
+import { CustomFieldError } from "./repo/_shared";
 import * as setup from "./setup";
 import { SetupError } from "./setup";
 import * as forums from "./forums";
@@ -202,7 +203,9 @@ export default {
         if (method === "PUT" || method === "POST") {
           const body = (await parseBody(request)) as { value?: string };
           const value = typeof body?.value === "string" ? body.value.trim() : "";
-          await service.setProjectMembership(env, projectId, value);
+          // P2: the Postgres path reports an unknown project (false) → 404; Zoho path always true.
+          const found = await service.setProjectMembership(env, projectId, value);
+          if (!found) return json(cors, 404, { error: "project not found" });
           return json(cors, 200, { ok: true, membershipLevel: value });
         }
         return methodNotAllowed(cors);
@@ -1370,6 +1373,8 @@ function errorResponse(cors: Record<string, string>, err: unknown): Response {
   if (err instanceof TechnicianError) return json(cors, 400, { error: err.message });
   if (err instanceof PersonError) return json(cors, 400, { error: err.message });
   if (err instanceof DailyReportError) return json(cors, 400, { error: err.message });
+  // P2: a `custom` payload that fails field_definitions validation.
+  if (err instanceof CustomFieldError) return json(cors, 400, { error: err.message, fields: err.errors });
   if (err instanceof service.WorkOrderNotFound) return json(cors, 404, { error: err.message });
   // Completion gate: a WO can't be closed while it has unresolved requested parts.
   if (err instanceof service.CompletionGateError) return json(cors, 409, { error: err.message });

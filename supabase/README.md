@@ -7,9 +7,10 @@ What is here:
 | `migrations/0001_baseline.sql` | Schema: extensions, `uuidv7()`, system tables, every domain table, vocab-validation + `updated_at` + events-immutability triggers, RLS on every table, key minting (`next_public_key`, `mint_public_key`), derived views (`v_*`), indexes, comments, the `genesis_api` role. |
 | `migrations/0002_seed_fhi.sql` | The FHI tenant, its default calendar, `tenant_settings` (from `wrangler-vars.txt` + numbering patterns), every `status_vocab` domain. |
 | `migrations/0003_seed_sandbox.sql` | The **Genesis Sandbox** tenant (SB1): a second, fully fictional tenant with a month of realistic data (users, CRM, projects, work orders, visits, items, hours, daily reports, action items, forums). See "Sandbox tenant" below. |
+| `migrations/0004_backend_mode.sql` | P2: `tenant_settings` **`backend.mode`** per tenant — FHI `zoho` (until the P3a import + cutover), sandbox `postgres`. genesis-api reads it per request (`src/backend-mode.ts`); absent = `zoho`. Idempotent (`DO NOTHING`, so a cutover flip is never reverted). `0003` also upserts the sandbox row, so a sandbox reset keeps Postgres mode. |
 | `tests/schema_lint.sql` | Plain-SQL checks (no pgTAP): BASELINE columns + RLS on every table, triggers present, `next_public_key` 100× distinct/sequential, `mint_public_key` formatting, events append-only. |
 
-All three migrations are idempotent (re-running them is safe). They were applied end-to-end on a local PostgreSQL 16 (single transaction, then re-applied, then the lint) before being handed over — but they have **not** been run against the real Supabase project. That is the step below.
+All four migrations are idempotent (re-running them is safe). They were applied end-to-end on a local PostgreSQL 16 (single transaction, then re-applied, then the lint) before being handed over — but they have **not** been run against the real Supabase project. That is the step below.
 
 ---
 

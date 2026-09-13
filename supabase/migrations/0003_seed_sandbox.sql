@@ -49,6 +49,8 @@ INSERT INTO public.tenant_settings (tenant_id, key, value) VALUES
   ('f4100000-0000-4000-8000-000000000002', 'app.wo_url_template',        to_jsonb('https://genesis-sandbox.pages.dev/work-orders?id={id}'::text)),
   ('f4100000-0000-4000-8000-000000000002', 'app.timezone',               to_jsonb('America/New_York'::text)),
   ('f4100000-0000-4000-8000-000000000002', 'wo.sequence_scope',          to_jsonb('global'::text)),
+  -- P2: the sandbox has no Zoho — every domain route is Postgres-backed (see 0004_backend_mode.sql).
+  ('f4100000-0000-4000-8000-000000000002', 'backend.mode',               to_jsonb('postgres'::text)),
   ('f4100000-0000-4000-8000-000000000002', 'admin.report_access',        '[]'::jsonb),
   ('f4100000-0000-4000-8000-000000000002', 'admin.zoho_user_options',    '[]'::jsonb),
   ('f4100000-0000-4000-8000-000000000002', 'admin.scheduling_confirmer', '[]'::jsonb),

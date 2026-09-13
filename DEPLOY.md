@@ -105,6 +105,15 @@ These are set in `wrangler.toml`:
 
 ---
 
+## 5. Sandbox Worker (P2 — optional, for playing without Zoho)
+```cmd
+npx supabase db push
+npx wrangler deploy --env sandbox
+```
+The first line applies `0004_backend_mode.sql` (sandbox = Postgres mode). The second publishes a SECOND Worker, `genesis-api-sandbox`, bound to the Genesis Sandbox tenant — no Zoho, no Google. Point the sandbox UI (https://genesis-sandbox.pages.dev) at that Worker's URL, then put that URL into `wrangler.toml` → `[env.sandbox.vars]` → `PUBLIC_WORKER_URL` and deploy the env again. Wipe + reseed the play data any time: `set DATABASE_URL=<owner url>` then `npx tsx scripts/reset-sandbox.ts`.
+
+---
+
 ## If something errors
 - **`running scripts is disabled`** → you're in PowerShell; use cmd (step 0).
 - **`/health` shows `woFieldConfigured: false`** → `ZOHO_WO_FIELD` isn't set; it's `work_order_hash` in `wrangler.toml`, redeploy.

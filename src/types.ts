@@ -338,6 +338,8 @@ export interface PurchaseItem {
    */
   archived: boolean;
   createdAt: string | null;
+  /** P2 — the ONE additive key (field_definitions entity "items"); always an object on the Postgres path. */
+  custom?: Record<string, unknown>;
 }
 
 /** Body for POST /work-orders/:id/requested-items — request a part from a WO. */
@@ -357,6 +359,8 @@ export interface AddItemInput {
   quantity?: number;
   note?: string;
   status?: string;
+  /** P2: custom fields (Postgres path). */
+  custom?: Record<string, unknown>;
 }
 
 /**
@@ -376,6 +380,8 @@ export interface UpdatePurchaseInput {
   status?: string;
   note?: string;
   quantity?: number;
+  /** P2: custom fields, merged + validated (Postgres path). */
+  custom?: Record<string, unknown>;
 }
 
 /** Body for POST /work-orders/:id/hours — log time against the WO (stored in hours_entries). */
@@ -581,6 +587,11 @@ export interface WorkOrder {
 
   createdAt: string | null;
   updatedAt: string | null;
+  /**
+   * P2 — the ONE additive key. Tenant custom fields (field_definitions, entity
+   * "work_orders"), always an object on the Postgres path; absent on the Zoho path.
+   */
+  custom?: Record<string, unknown>;
 }
 
 /** Body for POST /work-orders. */
@@ -611,10 +622,14 @@ export interface CreateWorkOrderInput {
   billable?: boolean;
   /** Billable | Non-Billable | Internal (default Billable). Written to the Billing task's `billing_status`. */
   billingStatus?: string;
+  /** P2: custom fields, validated against field_definitions (Postgres path; ignored by the Zoho path). */
+  custom?: Record<string, unknown>;
 }
 
 /** Body for PATCH /work-orders/:id — every field optional; only supplied ones apply. */
 export interface UpdateWorkOrderInput {
+  /** P2 (additive input): rename the ticket. Honored on the Postgres path; the Zoho path ignores it (the task-list title carries the WO# prefix). */
+  subject?: string;
   notes?: string;
   priority?: string;
   status?: WorkOrderStatus;       // legacy 3-state; maps to opening/closing the Action/Billing tasks
@@ -644,6 +659,8 @@ export interface UpdateWorkOrderInput {
   billable?: boolean;
   /** Billable | Non-Billable | Internal → the Billing task's `billing_status`. */
   billingStatus?: string;
+  /** P2: custom fields, shallow-merged onto the stored object (null deletes a key) and validated. Postgres path only. */
+  custom?: Record<string, unknown>;
 }
 
 /** Body for PATCH /work-orders/:id/tasks/:taskId — set a work task / subtask / Billing task's wo_task_status. */

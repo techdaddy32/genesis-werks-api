@@ -198,3 +198,42 @@ id = "e33320e5f0794cbcacc064365b305746"
 [[r2_buckets]]
 binding = "FILES"
 bucket_name = "genesis-files"
+
+#------------------------------------------------------------------------------
+# P2 — the SANDBOX environment: `wrangler deploy --env sandbox` publishes a SECOND
+# Worker, `genesis-api-sandbox`, bound to the Genesis Sandbox tenant (SB1,
+# 0003_seed_sandbox.sql). That tenant has tenant_settings backend.mode = "postgres"
+# (0004_backend_mode.sql), so every domain route is served from Postgres — NO Zoho
+# and NO Google Calendar are configured for it (visits are plain rows).
+#
+# wrangler does NOT inherit [vars] / [[hyperdrive]] / [[r2_buckets]] / [triggers]
+# into a named environment: every binding a sandbox Worker needs must be REPEATED
+# here. Deliberately absent: every ZOHO_* var, DEFAULT_CALENDAR_ID and the Google
+# vars (the sandbox must never reach a real integration). Secrets are per-Worker
+# too: `wrangler secret put CREDS_KEY --env sandbox` etc. if ever needed.
+# The same Hyperdrive config (one database, tenant rows keep tenants apart under
+# RLS + SET LOCAL app.tenant_id) and the same R2 bucket are reused.
+#------------------------------------------------------------------------------
+[env.sandbox]
+name = "genesis-api-sandbox"
+
+[env.sandbox.vars]
+TENANT_ID = "f4100000-0000-4000-8000-000000000002"
+APP_ORIGIN = "https://genesis-sandbox.pages.dev"
+APP_WO_URL_TEMPLATE = "https://genesis-sandbox.pages.dev/work-orders?id={id}"
+WO_SEQUENCE_SCOPE = "global"
+# TODO(craig): set after the first `wrangler deploy --env sandbox` (daily-report PDF links):
+# PUBLIC_WORKER_URL = "https://genesis-api-sandbox.<subdomain>.workers.dev"
+
+[[env.sandbox.hyperdrive]]
+binding = "HYPERDRIVE"
+id = "e33320e5f0794cbcacc064365b305746"
+
+[[env.sandbox.r2_buckets]]
+binding = "FILES"
+bucket_name = "genesis-files"
+
+# The reconcile cron is inert on a Postgres-backed tenant (service.reconcileCalendar
+# returns an empty SyncResult) but reminders.fireDueReminders still runs, so keep it.
+[env.sandbox.triggers]
+crons = ["*/10 * * * *"]

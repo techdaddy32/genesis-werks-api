@@ -102,6 +102,10 @@ export interface KnownSettings {
   // calendar.*
   "calendar.default_id": string;      // calendars.id (uuid)
   "calendar.default_address": string; // Google calendar address
+  /** P2: explicit off-switch for Google Calendar sync on the Postgres path (default: on iff default_address is set). */
+  "calendar.enabled": boolean;
+  // backend.* (P2, 0004) — which store serves the domain routes: "postgres" | "zoho" (default zoho)
+  "backend.mode": "postgres" | "zoho";
   // app.*
   "app.origin": string;
   "app.wo_url_template": string;
