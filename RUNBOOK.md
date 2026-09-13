@@ -68,6 +68,12 @@ Everything below runs from this folder on Craig's machine (cmd). The live Worker
 
 Rollback: redeploy the previous commit (KV binding returns; the KV data was never modified). Anything written to Postgres after the cutover would need re-keying by hand.
 
+## Tenants
+| Tenant | uuid | slug | Purpose |
+|---|---|---|---|
+| FHI Florida | `f4100000-0000-4000-8000-000000000001` | `fhi` | production tenant (0002_seed_fhi.sql); `TENANT_ID` in wrangler.toml |
+| Genesis Sandbox | `f4100000-0000-4000-8000-000000000002` | `sandbox` | SB1 (2026-09-13): fictional play tenant seeded by `supabase/migrations/0003_seed_sandbox.sql`; safe on prod (touches only its own rows). Wipe + reseed: `DATABASE_URL=<owner url> npx tsx scripts/reset-sandbox.ts` (`--counts`, `--wipe-only`, `--i-know` when the DB name contains `prod`). Serve it with `TENANT_ID=f4100000-0000-4000-8000-000000000002` on a separate Worker/preview, never by changing the FHI deployment's var. |
+
 ## Deploy
 `npx wrangler deploy` from this folder on Craig's machine. Full steps: `DEPLOY.md` (to be rewritten at OPS2).
 

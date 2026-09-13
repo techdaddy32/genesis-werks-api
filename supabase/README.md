@@ -6,9 +6,10 @@ What is here:
 |---|---|
 | `migrations/0001_baseline.sql` | Schema: extensions, `uuidv7()`, system tables, every domain table, vocab-validation + `updated_at` + events-immutability triggers, RLS on every table, key minting (`next_public_key`, `mint_public_key`), derived views (`v_*`), indexes, comments, the `genesis_api` role. |
 | `migrations/0002_seed_fhi.sql` | The FHI tenant, its default calendar, `tenant_settings` (from `wrangler-vars.txt` + numbering patterns), every `status_vocab` domain. |
+| `migrations/0003_seed_sandbox.sql` | The **Genesis Sandbox** tenant (SB1): a second, fully fictional tenant with a month of realistic data (users, CRM, projects, work orders, visits, items, hours, daily reports, action items, forums). See "Sandbox tenant" below. |
 | `tests/schema_lint.sql` | Plain-SQL checks (no pgTAP): BASELINE columns + RLS on every table, triggers present, `next_public_key` 100× distinct/sequential, `mint_public_key` formatting, events append-only. |
 
-Both migrations are idempotent (re-running them is safe). They were applied end-to-end on a local PostgreSQL 16 (single transaction, then re-applied, then the lint) before being handed over — but they have **not** been run against the real Supabase project. That is the step below.
+All three migrations are idempotent (re-running them is safe). They were applied end-to-end on a local PostgreSQL 16 (single transaction, then re-applied, then the lint) before being handed over — but they have **not** been run against the real Supabase project. That is the step below.
 
 ---
 
@@ -94,6 +95,25 @@ DELETE FROM supabase_migrations.schema_migrations;
 then `npx supabase db push` again. (`npx supabase db reset --linked` does the same thing in one command on newer CLIs — it asks for confirmation.)
 
 **Production after data exists** — never drop. Write a new forward migration (`0003_*.sql`) that alters what needs altering. Soft-delete columns (`deleted_at`) and `_archive` conventions mean nothing has to be destroyed to be undone.
+
+## Sandbox tenant (0003)
+
+`0003_seed_sandbox.sql` creates tenant **`f4100000-0000-4000-8000-000000000002`** (slug `sandbox`, name "Genesis Sandbox") — the tenant Craig plays in from a stand-alone Genesis Werks UI before any real data is imported. Everything in it is invented (people, streets, companies; only the Central-Florida city names are real). Dates are relative to `now()` so the board always shows some overdue, some today, some next week.
+
+**It is safe to apply to production.** Every row it writes carries the sandbox tenant id (or is the sandbox `tenants` row); it never reads or writes the FHI tenant or any other. RLS keeps the two tenants invisible to each other, and `test/sandbox-seed.test.ts` asserts the FHI row counts are identical before and after the seed.
+
+What it seeds: `tenant_settings` (sandbox numbering `GS-{seq}` / `{projectKey}-WO-{YYYY}-{seq4}` / `GS-D-{seq}`, `app.origin` https://genesis-sandbox.pages.dev, no calendar, `admin.*` empty), every `status_vocab` domain from the FHI seed plus the sandbox pick-lists (membership `Essential/Preferred/Elite`, `action_item_status` `Open/In Progress/Waiting/Closed`, `deal_stage`, `lead_source`, `deal_type`, `lead_type`), 3 `field_definitions`, 9 users (5 technicians, 2 office, 1 admin, 1 sales — `@genesis-sandbox.example`), 6 accounts, 12 contacts, 5 deals, 8 projects `GS-101…GS-108`, 25 work orders across all 8 `wo_status` states with work/billing tasks, visits, items, hours, daily reports, todos, materials, 8 action items, 2 reminders, forums, and one `events` row per WO. `sequences` are set so a live mint continues at `…-0026` / `GS-109` / `GS-D-6`.
+
+Idempotent: settings/vocab/field definitions upsert on their natural keys; the domain rows are inserted only when the sandbox has no work orders yet (re-running prints a NOTICE and changes nothing). To wipe and reseed after playing:
+
+```cmd
+set DATABASE_URL=postgres://postgres.<ref>:<pw>@aws-0-us-east-1.pooler.supabase.com:5432/postgres
+npx tsx scripts\reset-sandbox.ts            :: wipe every sandbox row (events included), then re-run 0003
+npx tsx scripts\reset-sandbox.ts --counts   :: rows per table for the sandbox, no changes
+npx tsx scripts\reset-sandbox.ts --wipe-only
+```
+
+The reset must connect as the **owner** of the tables (`postgres` — the dashboard connection string), not `genesis_api`: `events` is append-only and the wipe disables its trigger for the duration of one transaction. If the database *name* in `DATABASE_URL` contains `prod` the script refuses unless `--i-know` is passed (it still only touches the sandbox tenant). Point genesis-api at the sandbox with `TENANT_ID=f4100000-0000-4000-8000-000000000002` (or `X-Tenant-Id` with `ALLOW_TENANT_HEADER=true` in dev).
 
 ## Adding the next migration
 
