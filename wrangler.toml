@@ -147,6 +147,7 @@ ZOHO_ORDER_STATUS_FIELD = "order_status"
 # Model for POST /work-orders/:id/invoice-notes. Default (if unset) = "claude-haiku-4-5-20251001".
 # AI_MODEL = "claude-haiku-4-5-20251001"
 
+
 #------------------------------------------------------------------------------
 # SECRETS — DO NOT put values here. Set each with `wrangler secret put <NAME>`:
 #   wrangler secret put ZOHO_REFRESH_TOKEN
@@ -169,3 +170,12 @@ ZOHO_ORDER_STATUS_FIELD = "order_status"
 #   # Anthropic API key for the invoice-notes AI endpoint (POST /work-orders/:id/invoice-notes):
 #   wrangler secret put ANTHROPIC_API_KEY
 #------------------------------------------------------------------------------
+
+
+   [[hyperdrive]]
+   binding = "HYPERDRIVE"
+   id = "e33320e5f0794cbcacc064365b305746"
+
+   [[r2_buckets]]
+   binding = "FILES"
+   bucket_name = "genesis-files"
