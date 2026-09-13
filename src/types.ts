@@ -5,7 +5,14 @@
 /** Cloudflare Worker bindings + env vars. Mirrors wrangler.toml + .dev.vars.example. */
 export interface Env {
   // --- Bindings ---
-  WO_KV: KVNamespace;
+  /**
+   * F3: genesis-api has NO KV binding. The retired WO_KV namespace
+   * (aaeba18d5652455496657aa231210af4) is read-only history; scripts/import-kv.ts
+   * reads it through `wrangler kv` on Craig's machine, never through a Worker
+   * binding. This optional slot exists only so a one-off diagnostic could bind it
+   * as LEGACY_WO_KV without a type change; nothing in src/ uses it. Remove after cutover.
+   */
+  LEGACY_WO_KV?: KVNamespace;
   /** Hyperdrive → Supabase Postgres (genesis-db). See src/db.ts. */
   HYPERDRIVE?: Hyperdrive;
   /** R2 bucket `genesis-files` (plan images / photos / PDFs). Wired at a later row. */
@@ -24,6 +31,12 @@ export interface Env {
   ALLOW_TENANT_HEADER?: string;
   /** Shared secret for POST /internal/events/fanout (header X-Internal-Token). SECRET. */
   INTERNAL_TOKEN?: string;
+  /**
+   * F3: base64 of 32 random bytes; AES-256-GCM key for integration_credentials
+   * (the /setup-stored Zoho + Google OAuth material). SECRET (`wrangler secret put CREDS_KEY`).
+   * Unset → /setup cannot persist and the env-secret fallbacks are used.
+   */
+  CREDS_KEY?: string;
 
   // --- Zoho ---
   ZOHO_REFRESH_TOKEN: string;
@@ -146,7 +159,7 @@ export interface Env {
 }
 
 /**
- * PIN-gated admin config stored in KV under `admin:config`. Extensible: for now
+ * PIN-gated admin config stored in tenant_settings (admin.*; was KV `admin:config`). Extensible: for now
  * it only carries the list of users allowed to generate reports, but new fields
  * can be added over time. craig@fhiflorida.com is always present in reportAccess.
  */
@@ -365,7 +378,7 @@ export interface UpdatePurchaseInput {
   quantity?: number;
 }
 
-/** Body for POST /work-orders/:id/hours — log time against the WO (stored in KV). */
+/** Body for POST /work-orders/:id/hours — log time against the WO (stored in hours_entries). */
 export interface LogHoursInput {
   hours: number;         // hours to log (positive)
   techEmail?: string;    // optional tech attribution (email)
@@ -556,7 +569,7 @@ export interface WorkOrder {
    */
   todos: Todo[];
   /**
-   * Time logged against the WO, self-managed in KV (Zoho Projects v3 has no task
+   * Time logged against the WO, self-managed in Postgres hours_entries (Zoho Projects v3 has no task
    * time-log endpoint). `total` is the summed hours; `entries` is the per-log list.
    */
   hours: {
@@ -676,7 +689,7 @@ export interface UpdateVisitInput {
 // Daily reports — a technician adds dated notes to a WO over the day; "send"
 // compiles the day's entries into a PDF (served by the Worker), records a dated
 // subtask in Zoho, and posts a digest to Cliq. Entries + PDF + sent-marker live
-// in KV (same rationale as hours: a self-managed running log that must be reliable).
+// in Postgres daily_reports / daily_report_entries (same rationale as hours: a self-managed running log that must be reliable).
 //------------------------------------------------------------------------------
 
 /** One daily-report note appended to a WO's running log for a given day. */

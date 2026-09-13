@@ -40,11 +40,12 @@ Composite: `{projectKey}-WO-{year}-{seq4}` — e.g. **`FHI-672-WO-2026-0001`**.
 
 - The UI shows the `FHI-###` and the `year-seq` in two fields; the **stored** reference
   is the full string, written to the Zoho task custom field named by `ZOHO_WO_FIELD`.
-- **Sequence scope** is `WO_SEQUENCE_SCOPE`:
-  - `global` (default/assumed) — one portal-wide yearly counter.
-  - `per_project` — a separate yearly counter per project key.
-  Switching is a one-line env change; the counter keys change automatically (`src/wonumber.ts`).
-- The counter is an atomic yearly increment in KV (`WO_KV`). See **KV race window** below.
+- **Sequence scope / pattern** are tenant settings since F3: `tenant_settings`
+  `numbering.work_order = {pattern, scope, pad, yearly_reset}` (`global` = one portal-wide
+  yearly counter; `per_project` = one per project key). `WO_SEQUENCE_SCOPE` is only echoed on
+  `/health` — keep it in step with the setting.
+- The counter is the `sequences` table, advanced atomically by `mint_public_key_parts()`
+  inside the mint transaction (`src/keys.ts`, wrapped by `src/wonumber.ts`). No KV, no race.
 
 ---
 
@@ -65,16 +66,12 @@ Composite: `{projectKey}-WO-{year}-{seq4}` — e.g. **`FHI-672-WO-2026-0001`**.
 
 ---
 
-## KV race window (and how to harden)
+## Counter atomicity
 
-`src/wonumber.ts` mints the sequence with a KV read-modify-write. Cloudflare KV has no
-compare-and-swap and is eventually consistent, so two simultaneous requests *could* read the
-same value and collide. Mitigations in place: after writing we re-read and retry on mismatch
-(with jitter). For FHI's service volume (a few WOs/day) the window is effectively never hit.
-
-**If volume ever demands true atomicity:** move the counter to a **Durable Object**
-(single-threaded, strongly consistent) and call it from `nextSequence()` — the rest of the
-module is unchanged.
+Numbers are minted by `public.mint_public_key_parts()` with a single
+`INSERT … ON CONFLICT DO UPDATE … RETURNING` on `sequences` — concurrent callers serialize on
+the row lock and never receive the same number; a number is consumed only if the minting
+transaction commits. (The pre-F3 KV read-modify-write and its race window are gone.)
 
 ---
 
@@ -215,7 +212,7 @@ Google auth method, default calendar).
 
 ```
 backend/
-├── wrangler.toml          Worker config: WO_KV binding, cron, vars/secrets docs
+├── wrangler.toml          Worker config: Hyperdrive/R2 bindings, cron, vars/secrets docs (no KV since F3)
 ├── package.json           deps + scripts (dev / deploy / typecheck)
 ├── tsconfig.json          strict TS, Workers types
 ├── .dev.vars.example      every env var + placeholder (copy to .dev.vars for local dev)
@@ -225,7 +222,8 @@ backend/
     ├── index.ts           router + cron handler (the only entry point)
     ├── config.ts          THE one place unknowns/knobs are resolved (WO field, scope, auth)
     ├── types.ts           Env + WorkOrder + Create/Update input types
-    ├── wonumber.ts        atomic yearly KV counter; composite-string formatting
+    ├── wonumber.ts        WO number minting (Postgres sequences via keys.ts); composite-string parsing
+    ├── repo/              Postgres repos (technicians, people, hours, daily-reports) — F3
     ├── status.ts          pure status derivation from the two tasks
     ├── zoho.ts            Zoho Projects v3 client (token refresh, projects, lists, tasks)
     ├── calendar.ts        Google Calendar v3 client (SA-JWT / OAuth-user; event CRUD)
@@ -243,9 +241,7 @@ npm install
 # 1) log in
 npx wrangler login
 
-# 2) create the KV namespace (paste both ids into wrangler.toml)
-npx wrangler kv:namespace create WO_KV
-npx wrangler kv:namespace create WO_KV --preview
+# 2) (no KV namespace since F3 — Postgres via the HYPERDRIVE binding; see RUNBOOK.md)
 
 # 3) set secrets (never commit these)
 npx wrangler secret put ZOHO_REFRESH_TOKEN
@@ -288,7 +284,7 @@ returns `501 not configured` for anything it can't safely proceed without.
    group id). Set `ZOHO_SERVICE_MATCH_MODE` / `ZOHO_SERVICE_MATCH_VALUE` if not using the default.
 5. **Tasklist / status ids** — optional `ZOHO_TASKLIST_FLAG`, `ZOHO_STATUS_OPEN_ID`,
    `ZOHO_STATUS_CLOSED_ID` if the portal requires explicit status ids rather than the completion flag.
-6. **KV namespace ids** — from `wrangler kv:namespace create WO_KV` (+ `--preview`), into `wrangler.toml`.
+6. **Database** — the `HYPERDRIVE` binding + `genesis_api` role password (RUNBOOK.md); no KV since F3.
 7. **`APP_ORIGIN`** — the LV Plan app's origin, for CORS.
 8. **Zoho v3 endpoint/field shapes** — several `TODO(craig)` markers in `src/zoho.ts` flag where the
    exact v3 path or field name (project `key`, custom-field payload shape, subtask param, task-name
@@ -300,15 +296,15 @@ returns `501 not configured` for anything it can't safely proceed without.
 A managed list (name + email + active) that drives the work order 'Assign technicians' pick-list;
 checked techs are added as **guests** on the calendar event. No tech emails are hardcoded.
 
-- Storage: reuse the `WO_KV` namespace under a `technicians` JSON key for the interim (a D1 table is the
-  upgrade). Shape: `[{ id, name, email, active }]`.
+- Storage (F3): Postgres `users` + `user_roles` (role `technician`), read through `v_technicians`
+  (`src/repo/technicians.ts`). Was the `WO_KV` `technicians` JSON key.
 - Endpoints:
   - `GET /technicians` — list (UI pick-list + Technicians screen)
   - `POST /technicians` — add `{ name, email }`
   - `PATCH /technicians/:id` — edit / toggle `active`
 - Event calendar is fixed to Tech Schedule `notifications@fhiflorida.com`.
 
-Implemented in `src/technicians.ts` (KV-backed) + routed in `src/index.ts`. Starts empty — no seeds.
+Implemented in `src/repo/technicians.ts` (Postgres) + routed in `src/index.ts`. Starts empty — no seeds.
 On `POST /work-orders`, send `technicianIds: []` (registry ids) and the backend resolves them to active
 guest emails and invites them on the event. Endpoints:
 - `GET /technicians` (add `?active=true` for the WO pick-list) → `{ count, technicians[] }`
@@ -321,9 +317,10 @@ Instead of setting the three `ZOHO_*` secrets by hand, deploy the Worker then op
 `https://<worker-url>/setup` in a browser. Paste your Zoho **Client ID**, **Client Secret**, and a
 fresh **grant code** (Self Client → Generate Code, scopes
 `ZohoProjects.portals.READ,ZohoProjects.projects.ALL,ZohoProjects.tasklists.ALL,ZohoProjects.tasks.ALL`).
-The Worker exchanges the code for a refresh token and stores `{clientId, clientSecret, refreshToken}` in
-KV (`zoho_creds`). `src/creds.ts` reads KV first, then env — so /setup fully replaces the CLI path and
-overrides any stale env secrets. Lock the page after first use by setting a `SETUP_TOKEN` var.
+The Worker exchanges the code for a refresh token and stores `{clientId, clientSecret, refreshToken}`
+AES-256-GCM-encrypted in Postgres `integration_credentials` (F3; needs the `CREDS_KEY` secret — was KV
+`zoho_creds`). `src/creds.ts` reads the store first, then env — so /setup fully replaces the CLI path
+and overrides any stale env secrets. Lock the page after first use by setting a `SETUP_TOKEN` var.
 
 ## Tentative scheduling (added 2026-08-25)
 A visit can be created as **tentative** (pending confirmation):

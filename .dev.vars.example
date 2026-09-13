@@ -64,3 +64,13 @@ DATABASE_URL=postgres://genesis_api:test@localhost:5432/gw_test
 TENANT_ID=f4100000-0000-4000-8000-000000000001   # FHI tenant (0002_seed_fhi.sql); also in wrangler.toml [vars]
 ALLOW_TENANT_HEADER=false                         # true = X-Tenant-Id header may override TENANT_ID (dev only)
 INTERNAL_TOKEN=choose-a-long-random-string        # SECRET in prod (`wrangler secret put INTERNAL_TOKEN`); gates POST /internal/events/fanout
+
+# --- F3 (KV retired) --------------------------------------------------------------
+# AES-256-GCM key for integration_credentials (the /setup-stored Zoho + Google OAuth material).
+# base64 of 32 random bytes:  openssl rand -base64 32   (or: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))")
+# SECRET in prod (`wrangler secret put CREDS_KEY`). Unset → /setup cannot persist; ZOHO_* / GOOGLE_OAUTH_* env secrets are used.
+CREDS_KEY=
+# scripts/import-kv.ts (run on Craig's machine, NOT a Worker var): the retired WO_KV namespace id and the
+# live Worker URL it reads WO refs from. Neither is bound to the Worker — genesis-api has no KV binding.
+LEGACY_WO_KV_ID=aaeba18d5652455496657aa231210af4
+GENESIS_API_URL=https://genesis-api.<subdomain>.workers.dev

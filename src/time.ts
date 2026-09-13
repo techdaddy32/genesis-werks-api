@@ -55,3 +55,42 @@ export function formatDateTimeET(iso: string): string {
     minute: "2-digit",
   }).format(d);
 }
+
+/**
+ * Normalize an hours-entry `date` input to a precise instant (F3, data-model §2.12):
+ * a bare `YYYY-MM-DD` becomes midnight of that calendar day in America/New_York
+ * (EDT/EST resolved automatically); any other parseable value is returned as its
+ * ISO UTC instant; unparseable input → null (caller falls back to now()).
+ */
+export function normalizeEntryDateToIso(input: string | undefined | null): string | null {
+  const s = (input ?? "").trim();
+  if (!s) return null;
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    // Start from the UTC midnight guess and shift by the ET offset observed at that instant
+    // (two passes so a DST boundary on that day resolves to the post-shift offset).
+    let guess = Date.UTC(y, mo - 1, d, 0, 0, 0);
+    for (let i = 0; i < 2; i++) guess = Date.UTC(y, mo - 1, d) - etOffsetMs(new Date(guess));
+    return new Date(guess).toISOString();
+  }
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+/** Offset of America/New_York from UTC at the given instant, in ms (negative in the west). */
+function etOffsetMs(at: Date): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: ET_TZ,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).formatToParts(at);
+  const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? 0);
+  const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second"));
+  return asUtc - at.getTime();
+}

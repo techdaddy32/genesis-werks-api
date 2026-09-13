@@ -71,9 +71,13 @@ function toZohoTask(rec: any) {
 
 vi.mock("../src/zoho", () => {
   class ZohoError extends Error {}
+  // service.ts checks `instanceof ZohoThrottleError` on every task-status write (throttle
+  // → rethrow, else closed-task reopen); the mock must export it like wo-status.test.ts does.
+  class ZohoThrottleError extends ZohoError {}
   const nextId = (p: string) => `${p}${++h.state.seq}`;
   return {
     ZohoError,
+    ZohoThrottleError,
     getProject: async () => h.project,
     getAccessCodes: async () => ({ gate_code: null, community_gate: null, door_code: null }),
     updateAccessCodes: async () => {},
@@ -130,6 +134,20 @@ vi.mock("../src/zoho", () => {
     setTaskCompleted: async (_e: any, _p: string, taskId: string, completed: boolean) => {
       const rec = h.tasks.get(taskId);
       if (rec) rec.isCompleted = completed;
+    },
+    // writeTaskStatus() (wo_task_status + native open/closed in ONE PATCH) goes through
+    // patchTask since 2026-09-09; mirror wo-status.test.ts' fake, incl. the closed-task refusal.
+    patchTask: async (_e: any, _p: string, taskId: string, body: Record<string, unknown>) => {
+      const rec = h.tasks.get(taskId);
+      if (!rec) return;
+      if (rec.isCompleted && Object.keys(body).some((k) => k !== "status" && k !== "is_completed")) {
+        throw new ZohoError('Zoho PATCH failed: 400 {"details":[{"message":"cannot update a closed task","field_name":"[wo_task_status]"}]}');
+      }
+      for (const [k, v] of Object.entries(body)) {
+        if (k === "status") { rec.isCompleted = (v as any)?.id === "CLOSED"; continue; }
+        if (k === "is_completed") { rec.isCompleted = !!v; continue; }
+        rec.raw[k] = v; rec.customFields[k] = v as string;
+      }
     },
     getTask: async (_e: any, _p: string, taskId: string) => toZohoTask(h.tasks.get(taskId)),
     getTasksByProject: async (_e: any, projectId: string) =>
@@ -195,6 +213,15 @@ vi.mock("../src/calendar", () => ({
   listEvents: async () => [],
 }));
 vi.mock("../src/cliq", () => ({ postToCliq: async () => {} }));
+// F3: WorkOrder.hours is hydrated from Postgres (repo/hours.ts). These suites exercise the
+// Zoho-side service layer without a database, so the hours repo is an empty in-memory stand-in
+// (the same role the old `WO_KV: { get: () => null }` stub played).
+vi.mock("../src/repo/hours", () => ({
+  getHours: async () => ({ total: 0, entries: [] }),
+  appendHoursEntry: async () => ({ total: 0, entries: [] }),
+  editHoursEntry: async () => null,
+  deleteHoursEntry: async () => null,
+}));
 vi.mock("../src/pdf", () => ({ buildDailyReportPdf: () => new Uint8Array(), buildTextPdf: () => new Uint8Array() }));
 vi.mock("../src/wonumber", () => ({
   mintWorkOrderNumber: async () => ({
@@ -212,9 +239,9 @@ vi.mock("../src/wonumber", () => ({
 }));
 
 import * as service from "../src/service";
+import { _clearCache } from "../src/cache";
 
 const env: any = {
-  WO_KV: { get: async () => null, put: async () => {} },
   ZOHO_WO_FIELD: "work_order_hash",
   ZOHO_PORTAL_ID: "portal",
   ZOHO_PURCHASING_PROJECT_ID: PURCHASING_PROJECT,
@@ -228,6 +255,7 @@ describe("used-items installed/billable contract", () => {
   beforeEach(() => {
     h.tasks.clear();
     h.state.seq = 0;
+    _clearCache(); // the router invalidates the task scan after every write; tests must too
   });
 
   it("manual add defaults installed:false, source:manual, sourcePartId:null", async () => {

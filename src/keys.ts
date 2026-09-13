@@ -1,6 +1,6 @@
 //==============================================================================
-// keys.ts — public-key minting through the DB (F2). Replaces the KV counter in
-// wonumber.ts once F3 retires WO_KV; wonumber.ts is untouched in this row.
+// keys.ts — public-key minting through the DB (F2). Since F3, wonumber.ts
+// mintWorkOrderNumber() is a thin wrapper over mintPublicKey(tx, "work_order").
 //
 // SQL (0001 §8):
 //   mint_public_key_parts(p_tenant uuid, p_kind text, p_project_key text DEFAULT NULL)
@@ -13,7 +13,7 @@
 // caller's transaction commits — call this INSIDE the same withTenant() tx as
 // the row insert so a failed insert never burns a number.
 //
-// Returned shape == wonumber.ts MintedWo so callers can switch at F3.
+// Returned shape == wonumber.ts MintedWo (the wire shape callers already use).
 //==============================================================================
 
 import type { Tx } from "./db";

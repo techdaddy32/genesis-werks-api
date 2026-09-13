@@ -13,14 +13,19 @@ compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 
 #------------------------------------------------------------------------------
-# KV — holds the atomic yearly WO sequence counter (see src/wonumber.ts).
-# TODO(craig): create the namespace and paste the real id below:
-#   wrangler kv:namespace create WO_KV
+# KV — NONE. genesis-api has no KV binding since F3 (2026-09-13): the WO counter is
+# the `sequences` table, technicians/people are `users`, hours / daily reports /
+# reminders / admin config / /setup credentials are Postgres tables (see F3-NOTES.md).
+#
+# LEGACY_WO_KV — the retired namespace, kept ONLY as read-only history for
+# scripts/import-kv.ts (which reads it with `wrangler kv key list/get`, i.e. from
+# Craig's machine, never through a Worker binding). It is deliberately NOT bound.
+# Delete the namespace once the cutover is verified (RUNBOOK.md → F3 cutover).
+#   namespace: WO_KV  id = aaeba18d5652455496657aa231210af4  (created 2026-08-19)
+# [[kv_namespaces]]
+# binding = "LEGACY_WO_KV"
+# id = "aaeba18d5652455496657aa231210af4"
 #------------------------------------------------------------------------------
-[[kv_namespaces]]
-binding = "WO_KV"
-id = "aaeba18d5652455496657aa231210af4"          # created 2026-08-19 (WO_KV)
-preview_id = "aaeba18d5652455496657aa231210af4"  # reuse prod id for dev; create a --preview namespace later if you want isolation
 
 #------------------------------------------------------------------------------
 # Cron — the two-way calendar reconcile. Spec asks 5–15 min; we run every 10.
@@ -48,7 +53,8 @@ APP_ORIGIN = "https://fhi-plan-markup.onrender.com" # LV Plan markup app (Render
 # Default (if unset) = "<APP_ORIGIN>/work-orders/{id}". Set this to match the LV Plan app's real route.
 APP_WO_URL_TEMPLATE = "https://fhi-plan-markup.onrender.com/work-orders?id={id}"
 
-# WO sequence scope — see src/wonumber.ts. "global" = one portal-wide yearly counter.
+# WO sequence scope — reported on /health only. Since F3 the AUTHORITATIVE scope/pattern is
+# tenant_settings `numbering.work_order` (mint_public_key_parts); keep this in step with it.
 WO_SEQUENCE_SCOPE = "global"                        # "global" | "per_project"
 
 # Public URL of THIS deployed Worker. Daily-report PDFs are served BY this Worker
@@ -57,7 +63,7 @@ WO_SEQUENCE_SCOPE = "global"                        # "global" | "per_project"
 # TODO(craig): set this to the real deployed Worker URL after `wrangler deploy`.
 # PUBLIC_WORKER_URL = "https://fhi-service-wo.<subdomain>.workers.dev"
 
-# Optional: once /setup has stored Zoho creds in KV, reconfiguring via /setup requires this token.
+# Optional: once /setup has stored Zoho creds (integration_credentials), reconfiguring via /setup requires this token.
 # Leave unset for first-time setup. To lock the page afterward, set any random string here.
 # SETUP_TOKEN = "choose-a-random-string"
 
@@ -176,6 +182,10 @@ ZOHO_ORDER_STATUS_FIELD = "order_status"
 #   wrangler secret put ANTHROPIC_API_KEY
 #   # F2 — shared secret for POST /internal/events/fanout (Supabase DB webhook → Worker):
 #   wrangler secret put INTERNAL_TOKEN
+#   # F3 — AES-256-GCM key for integration_credentials (/setup-stored Zoho + Google OAuth
+#   # material). base64 of 32 random bytes, e.g. `openssl rand -base64 32`. Without it /setup
+#   # cannot persist and the ZOHO_* / GOOGLE_OAUTH_* secrets above are used instead:
+#   wrangler secret put CREDS_KEY
 #------------------------------------------------------------------------------
 
 

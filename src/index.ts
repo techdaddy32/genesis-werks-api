@@ -54,10 +54,11 @@ import type {
 } from "./types";
 import * as service from "./service";
 import { generateInvoiceNotes } from "./ai";
-import * as techs from "./technicians";
-import { TechnicianError } from "./technicians";
-import * as people from "./people";
-import { PersonError } from "./people";
+import * as techs from "./repo/technicians";
+import { TechnicianError } from "./repo/technicians";
+import * as people from "./repo/people";
+import { PersonError } from "./repo/people";
+import { DailyReportError } from "./repo/daily-reports";
 import * as setup from "./setup";
 import { SetupError } from "./setup";
 import * as forums from "./forums";
@@ -96,6 +97,17 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
     const method = request.method.toUpperCase();
+
+    // F3: bind the request's tenant once. Repos/services read env.TENANT_ID (tenantOf), so a
+    // header/JWT-resolved tenant flows through by overriding it on a per-request env copy.
+    // Resolution failure is left to surface where the DB is actually used (TenantError → 500),
+    // so /health and /setup keep answering while TENANT_ID is unconfigured.
+    try {
+      const t = await resolveTenant(request, env);
+      if (t.tenantId !== (env.TENANT_ID ?? "").trim().toLowerCase()) env = { ...env, TENANT_ID: t.tenantId };
+    } catch {
+      /* see above */
+    }
 
     try {
       // GET /health
@@ -892,18 +904,12 @@ export default {
         }
 
         // GET /work-orders/:id/daily-report/days — days that have reports, ENRICHED
-        // into { date, entries, sent } objects (the UI's "Sent reports" list expects
-        // objects, not bare date strings — see the mock shape). One getDailyReport per
-        // day; the day count is small.
+        // into { date, entries, sent, pdfUrl } objects (the UI's "Sent reports" list
+        // expects objects, not bare date strings — see the mock shape).
         if (rest === "days") {
           if (method === "GET") {
-            const { days } = await service.listDailyReportDays(env, woId);
-            const enriched = await Promise.all(
-              days.map(async (date) => {
-                const rep = await service.getDailyReport(env, woId, date);
-                return { date, entries: rep.entries.length, sent: rep.sent, pdfUrl: rep.pdfUrl };
-              })
-            );
+            // F3: one query over v_daily_report_days (was N KV reads); same row shape.
+            const enriched = await service.listDailyReportDaysEnriched(env, woId);
             return json(cors, 200, { days: enriched });
           }
           return methodNotAllowed(cors);
@@ -1363,6 +1369,8 @@ function errorResponse(cors: Record<string, string>, err: unknown): Response {
   if (err instanceof BadRequest) return json(cors, 400, { error: err.message });
   if (err instanceof TechnicianError) return json(cors, 400, { error: err.message });
   if (err instanceof PersonError) return json(cors, 400, { error: err.message });
+  if (err instanceof DailyReportError) return json(cors, 400, { error: err.message });
+  if (err instanceof service.WorkOrderNotFound) return json(cors, 404, { error: err.message });
   // Completion gate: a WO can't be closed while it has unresolved requested parts.
   if (err instanceof service.CompletionGateError) return json(cors, 409, { error: err.message });
   if (err instanceof ConfigError) {

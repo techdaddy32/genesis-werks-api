@@ -158,6 +158,15 @@ vi.mock("../src/calendar", () => ({
   listEvents: async () => [],
 }));
 vi.mock("../src/cliq", () => ({ postToCliq: async () => {} }));
+// F3: WorkOrder.hours is hydrated from Postgres (repo/hours.ts). These suites exercise the
+// Zoho-side service layer without a database, so the hours repo is an empty in-memory stand-in
+// (the same role the old `WO_KV: { get: () => null }` stub played).
+vi.mock("../src/repo/hours", () => ({
+  getHours: async () => ({ total: 0, entries: [] }),
+  appendHoursEntry: async () => ({ total: 0, entries: [] }),
+  editHoursEntry: async () => null,
+  deleteHoursEntry: async () => null,
+}));
 vi.mock("../src/pdf", () => ({ buildDailyReportPdf: () => new Uint8Array(), buildTextPdf: () => new Uint8Array() }));
 vi.mock("../src/wonumber", () => ({
   mintWorkOrderNumber: async () => ({
@@ -177,7 +186,6 @@ vi.mock("../src/wonumber", () => ({
 import * as service from "../src/service";
 
 const env: any = {
-  WO_KV: { get: async () => null, put: async () => {} },
   ZOHO_WO_FIELD: "work_order_hash",
   ZOHO_PORTAL_ID: "portal",
   APP_ORIGIN: "https://app.example.com",

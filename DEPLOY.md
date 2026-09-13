@@ -46,6 +46,14 @@ and submit. The Worker does the token exchange and stores it. No `wrangler secre
 *(This replaces setting `ZOHO_*` secrets by hand. If you'd rather use the CLI, the three commands are
 `npx wrangler secret put ZOHO_CLIENT_ID` / `ZOHO_CLIENT_SECRET` / `ZOHO_REFRESH_TOKEN`.)*
 
+## 3a′. Set the credentials key (CLI — one command, F3)
+The /setup page stores the Zoho/Google OAuth material encrypted in Postgres. It needs a key:
+```
+npx wrangler secret put CREDS_KEY
+```
+Paste the output of `openssl rand -base64 32` (any 32 random bytes, base64). Without it /setup shows
+an error on save and the Worker falls back to the `ZOHO_*` / `GOOGLE_OAUTH_*` secrets.
+
 ## 3b. Set the Google secrets (CLI — three commands)
 Run each line, then paste the matching value at the **"Enter a secret value:"** prompt. Use the NEW
 values (after you reset the secret). The name after `put` is a fixed slot — never put the secret on the line.
@@ -63,6 +71,19 @@ npx wrangler deploy
 
 ---
 
+## 3c. One-time: move the KV data into Postgres (F3 cutover)
+Do this ONCE, before the first deploy of the no-KV build, from this folder (full detail: RUNBOOK.md → "F3 cutover"):
+```
+npx tsx scripts/import-kv.ts --dump --out kv-dump.json --worker-url https://<your-live-worker>.workers.dev
+set DATABASE_URL=postgres://genesis_api:<password>@<supabase-pooler-host>:5432/postgres
+set CREDS_KEY=<the same value you gave wrangler secret put CREDS_KEY>
+npx tsx scripts/import-kv.ts --from-dump kv-dump.json --dry-run
+npx tsx scripts/import-kv.ts --from-dump kv-dump.json
+```
+The last command prints a table of what was loaded (technicians, people, hours, daily reports, reminders,
+admin config, the WO counter). Re-running it is safe. Then `npx wrangler deploy`. The old KV namespace is
+never written again; delete it once you have verified the app for a week.
+
 ## 4. Check it's alive
 Open this in a browser (use your Worker URL from step 2):
 ```
@@ -74,7 +95,7 @@ You should see JSON with `"ok": true` and `"woFieldConfigured": true`.
 
 ## Already done for you (nothing to do)
 These are set in `wrangler.toml`:
-- `WO_KV` namespace id (created) · `ZOHO_WO_FIELD = work_order_hash`
+- Hyperdrive + R2 bindings (no KV since F3) · `ZOHO_WO_FIELD = work_order_hash`
 - `GOOGLE_AUTH_METHOD = oauth_user` · `DEFAULT_CALENDAR_ID = notifications@fhiflorida.com`
 - `APP_ORIGIN = https://fhi-plan-markup.onrender.com` · `WO_SEQUENCE_SCOPE = global`
 

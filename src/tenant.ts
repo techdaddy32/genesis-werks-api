@@ -56,3 +56,14 @@ export async function resolveTenant(request: Request, env: Env): Promise<Resolve
   if (!isUuid(id)) throw new TenantError("TENANT_ID is not a UUID", 500);
   return { tenantId: id, source: "env" };
 }
+
+/**
+ * The tenant a DB call is scoped to when no request is at hand (service modules,
+ * cron, repos). index.ts copies resolveTenant()'s answer into env.TENANT_ID for
+ * the request so header/JWT overrides flow through unchanged (F3).
+ */
+export function tenantOf(env: Env): string {
+  const id = (env.TENANT_ID ?? "").trim().toLowerCase();
+  if (!isUuid(id)) throw new TenantError("TENANT_ID is not configured (wrangler.toml [vars] / .dev.vars)", 500);
+  return id;
+}

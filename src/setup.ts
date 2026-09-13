@@ -3,10 +3,11 @@
 //
 // GET  /setup  -> an HTML form (Client ID, Client Secret, Grant Code).
 // POST /setup  -> exchanges the grant code for a refresh token (Worker CAN reach
-//                 Zoho), stores {clientId, clientSecret, refreshToken} in KV, and
+//                 Zoho), stores {clientId, clientSecret, refreshToken} encrypted in
+//                 integration_credentials (F3; was KV), and
 //                 shows a success page. No curl, no `wrangler secret put`.
 //
-// Lock: the first time (KV empty) it's open. Once creds exist in KV, reconfiguring
+// Lock: the first time (nothing stored) it's open. Once creds are stored, reconfiguring
 // requires a matching ?/field `token` equal to the optional SETUP_TOKEN var — so a
 // stranger who finds the URL can't overwrite live creds.
 //==============================================================================
@@ -14,13 +15,13 @@
 import type { Env } from "./types";
 import {
   saveZohoCreds,
-  isZohoConfiguredInKv,
+  isZohoConfiguredInStore,
   getZohoScopes,
   saveZohoScopes,
   saveGooglePending,
   getGooglePending,
   saveGoogleCreds,
-  isGoogleConfiguredInKv,
+  isGoogleConfiguredInStore,
 } from "./creds";
 import { _clearTokenCache } from "./zoho";
 import { _clearGoogleTokenCache } from "./calendar";
@@ -40,14 +41,14 @@ export class SetupError extends Error {
 }
 
 const ZOHO_CONSOLE = "https://api-console.zoho.com";
-/** Compiled-in default scope. Editable on /setup and remembered in KV (getZohoScopes), so the
+/** Compiled-in default scope. Editable on /setup and remembered in tenant_settings (getZohoScopes), so the
  *  scope can change without a code edit + redeploy. */
 const DEFAULT_SCOPES = "ZohoProjects.portals.READ,ZohoProjects.projects.ALL,ZohoProjects.tasklists.ALL,ZohoProjects.tasks.ALL,ZohoProjects.forums.ALL,ZohoProjects.bugs.ALL,ZohoProjects.users.READ";
 
 /** GET /setup — render both the Zoho and Google setup sections. */
 export async function renderSetupForm(env: Env, baseUrl: string, notice = ""): Promise<string> {
-  const zohoOk = await isZohoConfiguredInKv(env);
-  const googleOk = await isGoogleConfiguredInKv(env);
+  const zohoOk = await isZohoConfiguredInStore(env);
+  const googleOk = await isGoogleConfiguredInStore(env);
   const scopes = (await getZohoScopes(env)) || DEFAULT_SCOPES;
   const lockNote = zohoOk
     ? `<div class="warn">Zoho is already configured. Resubmitting needs the setup token (SETUP_TOKEN).</div>`
@@ -189,8 +190,8 @@ export async function handleSetupPost(
     throw new SetupError("Client ID, Client Secret, and Grant Code are all required.");
   }
 
-  // Lock: once configured in KV, require the setup token to overwrite.
-  if (await isZohoConfiguredInKv(env)) {
+  // Lock: once configured (integration_credentials), require the setup token to overwrite.
+  if (await isZohoConfiguredInStore(env)) {
     if (!env.SETUP_TOKEN || token !== env.SETUP_TOKEN) {
       throw new SetupError(
         "Zoho is already configured. To reconfigure, set a SETUP_TOKEN var on the Worker and enter it in the form."

@@ -342,11 +342,12 @@ export interface AggregateMeta {
 }
 
 //------------------------------------------------------------------------------
-// Aggregate cache — memory (per isolate) + KV (cross-isolate). The dashboard re-pulled ~25
-// Zoho calls on EVERY close/edit/filter, which tripped Zoho's 100-per-API-per-2-minutes cap
-// (live 2026-09-03) and the swallowed errors looked like "all my action items vanished".
-// Fresh window = AGG_FRESH_MS; a stale copy is kept AGG_STALE_TTL_S so a throttled request can
-// still show the last-known list instead of nothing. Mutations invalidate the cache.
+// Aggregate cache — memory (per isolate). The dashboard re-pulled ~25 Zoho calls on EVERY
+// close/edit/filter, which tripped Zoho's 100-per-API-per-2-minutes cap (live 2026-09-03) and
+// the swallowed errors looked like "all my action items vanished". Fresh window = AGG_FRESH_MS;
+// a stale copy is kept AGG_STALE_TTL_S so a throttled request can still show the last-known
+// list instead of nothing. Mutations invalidate the cache. F3: the KV (cross-isolate) copy is
+// gone — genesis-api has no KV binding; a cold isolate re-fetches (temporary until P3a).
 //------------------------------------------------------------------------------
 const AGG_FRESH_MS = 90_000;
 const AGG_STALE_TTL_S = 30 * 60;
@@ -358,37 +359,21 @@ interface AggCacheEntry {
 const aggMem = new Map<string, AggCacheEntry>();
 const aggKey = (statustype?: "open" | "closed") => `ai:agg:${statustype ?? "all"}`;
 
-async function aggCacheGet(env: Env, key: string): Promise<AggCacheEntry | null> {
+async function aggCacheGet(_env: Env, key: string): Promise<AggCacheEntry | null> {
   const m = aggMem.get(key);
-  if (m) return m;
-  try {
-    const raw = await env.WO_KV?.get(key);
-    if (!raw) return null;
-    const e = JSON.parse(raw) as AggCacheEntry;
-    aggMem.set(key, e);
-    return e;
-  } catch {
+  if (!m) return null;
+  if (Date.now() - m.at > AGG_STALE_TTL_S * 1000) {
+    aggMem.delete(key);
     return null;
   }
+  return m;
 }
-async function aggCachePut(env: Env, key: string, e: AggCacheEntry): Promise<void> {
+async function aggCachePut(_env: Env, key: string, e: AggCacheEntry): Promise<void> {
   aggMem.set(key, e);
-  try {
-    await env.WO_KV?.put(key, JSON.stringify(e), { expirationTtl: AGG_STALE_TTL_S });
-  } catch {
-    /* cache is best-effort */
-  }
 }
 /** Drop every cached aggregate (called after any action-item add/update/delete). */
-export async function invalidateAggregateCache(env: Env): Promise<void> {
+export async function invalidateAggregateCache(_env: Env): Promise<void> {
   aggMem.clear();
-  for (const st of [undefined, "open", "closed"] as const) {
-    try {
-      await env.WO_KV?.delete(aggKey(st));
-    } catch {
-      /* ignore */
-    }
-  }
 }
 /** Test seam. */
 export function _clearAggregateCache(): void {

@@ -1,5 +1,10 @@
 //==============================================================================
-// cache.ts — tiny read-through cache: per-isolate memory + WO_KV (cross-isolate).
+// cache.ts — tiny read-through cache: per-isolate memory only.
+//
+// F3: the WO_KV cross-isolate layer is gone (genesis-api has no KV binding). Entries
+// now live for the isolate's lifetime only; a cold isolate re-fetches from Zoho. This
+// is a deliberate, temporary degradation — Zoho reads disappear at P3a. Nothing
+// here is durable state (documented in F3-NOTES.md).
 //
 // Why: Zoho Projects throttles at ~100 requests per API endpoint per rolling 2 minutes
 // (HTTP 400 URL_ROLLING_THROTTLES_LIMIT_EXCEEDED, live 2026-09-03). Several routes fan
@@ -20,52 +25,51 @@ export interface CacheEntry<T> {
 }
 
 const mem = new Map<string, CacheEntry<unknown>>();
+/** When each entry stops being served at all (its stale window end). */
+const expiresAt = new Map<string, number>();
 const inflight = new Map<string, Promise<unknown>>();
 
 /** Test seam. */
 export function _clearCache(): void {
   mem.clear();
+  expiresAt.clear();
 }
 
-export async function cacheGet<T>(env: Env, key: string): Promise<CacheEntry<T> | null> {
+export async function cacheGet<T>(_env: Env, key: string): Promise<CacheEntry<T> | null> {
   const m = mem.get(key);
-  if (m) return m as CacheEntry<T>;
-  try {
-    const raw = await env.WO_KV?.get(key);
-    if (!raw) return null;
-    const e = JSON.parse(raw) as CacheEntry<T>;
-    mem.set(key, e);
-    return e;
-  } catch {
+  if (!m) return null;
+  const exp = expiresAt.get(key);
+  if (exp !== undefined && Date.now() > exp) {
+    mem.delete(key);
+    expiresAt.delete(key);
     return null;
   }
+  return m as CacheEntry<T>;
 }
 
-export async function cachePut<T>(env: Env, key: string, value: T, staleTtlS: number): Promise<CacheEntry<T>> {
+export async function cachePut<T>(_env: Env, key: string, value: T, staleTtlS: number): Promise<CacheEntry<T>> {
   const e: CacheEntry<T> = { at: Date.now(), value };
   mem.set(key, e);
-  try {
-    await env.WO_KV?.put(key, JSON.stringify(e), { expirationTtl: Math.max(60, staleTtlS) });
-  } catch {
-    /* best-effort */
-  }
+  // Same retention as the old KV expirationTtl: past the stale window the entry is gone.
+  expiresAt.set(key, e.at + Math.max(60, staleTtlS) * 1000);
   return e;
 }
 
-export async function cacheDelete(env: Env, ...keys: string[]): Promise<void> {
+export async function cacheDelete(_env: Env, ...keys: string[]): Promise<void> {
   for (const k of keys) {
     mem.delete(k);
-    try {
-      await env.WO_KV?.delete(k);
-    } catch {
-      /* ignore */
-    }
+    expiresAt.delete(k);
   }
 }
 
-/** Drop every in-memory entry whose key starts with `prefix` (KV copies age out on their own). */
+/** Drop every in-memory entry whose key starts with `prefix`. */
 export function cacheDropPrefix(prefix: string): void {
-  for (const k of Array.from(mem.keys())) if (k.startsWith(prefix)) mem.delete(k);
+  for (const k of Array.from(mem.keys())) {
+    if (k.startsWith(prefix)) {
+      mem.delete(k);
+      expiresAt.delete(k);
+    }
+  }
 }
 
 export interface CachedResult<T> {

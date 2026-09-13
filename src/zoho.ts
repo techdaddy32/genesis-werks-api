@@ -47,7 +47,7 @@ export async function getAccessToken(env: Env): Promise<string> {
     return tokenCache.accessToken;
   }
 
-  // Credentials come from KV (written by /setup) first, then env secrets.
+  // Credentials come from integration_credentials (written by /setup) first, then env secrets.
   const creds = await getZohoCreds(env);
   if (!creds) {
     throw new ZohoError("Zoho is not configured yet — open /setup to connect it.");

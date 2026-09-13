@@ -54,7 +54,7 @@ export function _clearGoogleTokenCache(): void {
 
 /** Method B — exchange a shared user's refresh token. */
 async function getTokenViaOAuthUser(env: Env): Promise<{ accessToken: string; ttlMs: number }> {
-  // Creds come from KV (written by the /setup Google flow) first, then env secrets.
+  // Creds come from integration_credentials (written by the /setup Google flow) first, then env secrets.
   const creds = await getGoogleCreds(env);
   if (!creds) {
     throw new CalendarError(

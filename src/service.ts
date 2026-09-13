@@ -53,6 +53,11 @@ import { woFieldName, orderStatusFieldName, membershipFieldName, companyCamField
   woTaskStatusFieldName, billingStatusFieldName, woCycleStatusFieldName, TASK_STATUS_PENDING, TASK_STATUS_COMPLETED, BILLING_STATUSES, DEFAULT_BILLING_STATUS } from "./config";
 import { postToCliq } from "./cliq";
 import { getAdminConfig } from "./admin";
+import * as hoursRepo from "./repo/hours";
+import * as dailyRepo from "./repo/daily-reports";
+import { findWorkOrderRef, type WoRef } from "./repo/_shared";
+import { withTenantRead } from "./db";
+import { tenantOf } from "./tenant";
 import { buildDailyReportPdf, buildTextPdf } from "./pdf";
 import { todayET, formatDateET, formatDateTimeET } from "./time";
 
@@ -980,7 +985,9 @@ export async function migrateStatusModel(
     if (!pair.action) continue;
     if (opts.onlyId && pair.action.id !== opts.onlyId) continue;
     const wo = woFromPortalTask(env, taskListId, pair.action, pair.billing, pair.others, pair.statusTask);
-    const legacyBillable = await readLegacyBillable(env, pair.action.id);
+    // F3: the KV `billable:<id>` flag is gone (retired 2026-09-09; values preserved as
+    // events by scripts/import-kv.ts). Read as the default (billable).
+    const legacyBillable = true;
     const needs: string[] = [];
     if (!pair.statusTask) needs.push("status-task");
     else if (!taskField(pair.statusTask, woCycleStatusFieldName(env))) needs.push("cycle-status");
@@ -1571,7 +1578,7 @@ async function createVisitSubtask(
 /** Portal query for every task tagged with a WO number (work_order_hash contains "-WO-"). */
 /**
  * The ONE portal-wide "-WO-" task query every list surface depends on (board, schedule, projects
- * tab, items, billing, todos), cached briefly (memory + KV). Rate-limit relief 2026-09-03: this
+ * tab, items, billing, todos), cached briefly (per-isolate memory). Rate-limit relief 2026-09-03: this
  * was 4–6 paginated /tasks requests per call and the UI called it from six screens plus twice per
  * WO open. Any app write (non-GET request) invalidates it — see index.ts; edits made directly in
  * Zoho show up within WO_TAGGED_FRESH_MS. Callers get a fresh deep copy (some mutate rows).
@@ -2059,48 +2066,29 @@ export async function removeUsedItem(
 }
 
 //------------------------------------------------------------------------------
-// LOG HOURS (Feature B) — self-managed hours log stored in KV. Zoho Projects v3
-// has NO task time-log endpoint (the .../tasks/{id}/logs path returns
-// URL_NOT_CONFIGURED and the connector exposes no time-log tool), so hours are
-// kept in WO_KV under `hours:<actionTaskId>` and summed by this Worker.
+// LOG HOURS (Feature B) — self-managed hours log. Zoho Projects v3 has NO task
+// time-log endpoint, so hours are OURS: F3 moved them from KV (`hours:<id>`) to
+// Postgres hours_entries (repo/hours.ts). The WO still lives in Zoho, so writes
+// pass a WoRef (ids/keys from the loaded WO) and the repo keeps a shadow
+// work_orders row in step via external_ids.
 //------------------------------------------------------------------------------
 
-/** KV key holding the hours log for a WO (keyed by the Action task id). */
-function hoursKey(actionTaskId: string): string {
-  return `hours:${actionTaskId}`;
-}
-
-// LEGACY WO-level billable flag (KV). Superseded 2026-09-09 by the Billing task's
-// `billing_status` pick-list; the KV value is read ONLY by the one-time migration
-// (to seed billing_status) and is never written anymore.
-function billableKey(actionTaskId: string): string {
-  return `billable:${actionTaskId}`;
-}
-async function readLegacyBillable(env: Env, actionTaskId: string): Promise<boolean> {
-  const raw = await env.WO_KV.get(billableKey(actionTaskId));
-  if (raw === null) return true; // default: billable
-  return raw === "true" || raw === "1";
-}
-
-/** Read the KV-backed hours log for a WO. Defaults to zeros/empty on miss or parse error. */
-async function hoursFromKv(env: Env, actionTaskId: string): Promise<WorkOrder["hours"]> {
-  const raw = await env.WO_KV.get(hoursKey(actionTaskId));
-  if (!raw) return { total: 0, entries: [] };
-  try {
-    const parsed = JSON.parse(raw) as WorkOrder["hours"];
-    if (parsed && Array.isArray(parsed.entries)) {
-      return { total: typeof parsed.total === "number" ? parsed.total : 0, entries: parsed.entries };
-    }
-  } catch {
-    /* fall through to default */
-  }
-  return { total: 0, entries: [] };
+/** The repo's view of a loaded WO (what ensureWorkOrderRef needs). */
+function woRefOf(wo: WorkOrder): WoRef {
+  return {
+    actionTaskId: wo.id,
+    zohoProjectId: wo.projectId,
+    projectKey: wo.projectKey,
+    projectName: wo.projectName,
+    client: wo.client,
+    workOrderNumber: wo.workOrderNumber,
+    subject: wo.subject,
+  };
 }
 
 /**
- * Log hours against a WO. Self-managed: appends an entry to the KV hours log
- * (`hours:<actionTaskId>`), recomputes the running total (rounded to 2 decimals),
- * and returns the refreshed WO (whose hours getWorkOrder reads back from KV).
+ * Log hours against a WO: appends an hours_entries row (position = next index),
+ * and returns the refreshed WO (whose hours getWorkOrder reads back from Postgres).
  */
 export async function logHours(
   env: Env,
@@ -2109,20 +2097,12 @@ export async function logHours(
 ): Promise<WorkOrder | null> {
   const existing = await getWorkOrder(env, actionTaskId);
   if (!existing) return null;
-
-  const current = await hoursFromKv(env, actionTaskId);
-  const entries = [
-    ...current.entries,
-    {
-      tech: input.techEmail ?? null,
-      hours: input.hours,
-      at: input.date ?? new Date().toISOString(),
-      note: input.note ?? null,
-    },
-  ];
-  const total = Math.round(entries.reduce((sum, e) => sum + e.hours, 0) * 100) / 100;
-  await env.WO_KV.put(hoursKey(actionTaskId), JSON.stringify({ entries, total }));
-
+  await hoursRepo.appendHoursEntry(env, woRefOf(existing), {
+    tech: input.techEmail ?? null,
+    hours: input.hours,
+    at: input.date ?? null,
+    note: input.note ?? null,
+  });
   return getWorkOrder(env, actionTaskId);
 }
 
@@ -2132,7 +2112,7 @@ export async function deleteItem(env: Env, itemId: string): Promise<boolean> {
   return true;
 }
 
-/** Delete one hours entry by index (KV). Recomputes the total. Null if out of range / no WO. */
+/** Delete one hours entry by index (positions re-packed). Null if out of range / no WO. */
 export async function deleteHoursEntry(
   env: Env,
   actionTaskId: string,
@@ -2140,18 +2120,14 @@ export async function deleteHoursEntry(
 ): Promise<WorkOrder | null> {
   const existing = await getWorkOrder(env, actionTaskId);
   if (!existing) return null;
-  const current = await hoursFromKv(env, actionTaskId);
-  if (!Number.isInteger(index) || index < 0 || index >= current.entries.length) return null;
-  const entries = current.entries.slice();
-  entries.splice(index, 1);
-  const total = Math.round(entries.reduce((sum, x) => sum + x.hours, 0) * 100) / 100;
-  await env.WO_KV.put(hoursKey(actionTaskId), JSON.stringify({ entries, total }));
+  const hours = await hoursRepo.deleteHoursEntry(env, actionTaskId, index);
+  if (!hours) return null;
   return getWorkOrder(env, actionTaskId);
 }
 
 /**
- * Edit one hours entry (by its index in the KV log) — hours / note / tech. Recomputes
- * the running total. Returns the refreshed WO, or null if the WO or index isn't found.
+ * Edit one hours entry (by its index) — hours / note / tech. Returns the refreshed WO,
+ * or null if the WO or index isn't found.
  */
 export async function editHoursEntry(
   env: Env,
@@ -2161,112 +2137,56 @@ export async function editHoursEntry(
 ): Promise<WorkOrder | null> {
   const existing = await getWorkOrder(env, actionTaskId);
   if (!existing) return null;
-  const current = await hoursFromKv(env, actionTaskId);
-  if (!Number.isInteger(index) || index < 0 || index >= current.entries.length) return null;
-  const e = current.entries[index];
-  const entries = current.entries.slice();
-  entries[index] = {
-    ...e,
-    hours: patch.hours !== undefined ? patch.hours : e.hours,
-    note: patch.note !== undefined ? patch.note : e.note,
-    tech: patch.tech !== undefined ? patch.tech : e.tech,
-  };
-  const total = Math.round(entries.reduce((sum, x) => sum + x.hours, 0) * 100) / 100;
-  await env.WO_KV.put(hoursKey(actionTaskId), JSON.stringify({ entries, total }));
+  const hours = await hoursRepo.editHoursEntry(env, actionTaskId, index, patch);
+  if (!hours) return null;
   return getWorkOrder(env, actionTaskId);
 }
 
 //------------------------------------------------------------------------------
 // DAILY REPORTS — a tech appends dated notes to a WO over the day; "send" compiles
 // the day's entries into a text PDF that the Worker serves, records a dated Zoho
-// subtask, and posts a digest to Cliq. Entries, the compiled PDF, the days index,
-// and the sent-marker all live in KV (same reliability rationale as hours). Zoho
-// Projects v3 has no reliable task-attachment endpoint on our API base, so the PDF
-// is served by this Worker; attaching to Zoho is best-effort only.
+// subtask, and posts a digest to Cliq. F3: entries, days, sent state and the PDF
+// bytes live in Postgres (repo/daily-reports.ts: daily_reports / daily_report_entries
+// / files) instead of KV. Zoho Projects v3 has no reliable task-attachment endpoint
+// on our API base, so the PDF is served by this Worker; attaching to Zoho is
+// best-effort only.
 //------------------------------------------------------------------------------
 
-/** KV key: a single day's report entries for a WO. */
-function dailyReportKey(actionTaskId: string, date: string): string {
-  return `dailyreport:${actionTaskId}:${date}`;
-}
-/** KV key: the sorted, unique index of days that have entries for a WO. */
-function dailyReportDaysKey(actionTaskId: string): string {
-  return `dailyreport-days:${actionTaskId}`;
-}
-/** KV key: the compiled PDF (base64) for a WO+date. */
-function dailyReportPdfKey(actionTaskId: string, date: string): string {
-  return `dailyreport-pdf:${actionTaskId}:${date}`;
-}
-/** KV key: the sent-marker for a WO+date. */
-function dailyReportSentKey(actionTaskId: string, date: string): string {
-  return `dailyreport-sent:${actionTaskId}:${date}`;
+/**
+ * The WoRef for a daily-report write. The old KV path did not need the WO to be
+ * loadable; with a real FK the WO must exist (data-model §8.10: unknown WO → 404),
+ * so an unknown WO throws DailyReportError (→ 404 from the router).
+ */
+async function woRefForDailyReport(env: Env, actionTaskId: string): Promise<WoRef> {
+  const known = await withTenantRead(env, tenantOf(env), (tx) => findWorkOrderRef(tx, actionTaskId));
+  if (known) {
+    // The shadow row exists; ensureWorkOrderRef short-circuits on the external id.
+    return { actionTaskId, zohoProjectId: "", projectKey: "", projectName: "", workOrderNumber: "", subject: "" };
+  }
+  const wo = await getWorkOrder(env, actionTaskId, { allowCached: true });
+  if (!wo) throw new WorkOrderNotFound(actionTaskId);
+  return woRefOf(wo);
 }
 
-/** Read a day's entries from KV (empty on miss or parse error). */
-async function readDailyEntries(env: Env, actionTaskId: string, date: string): Promise<DailyReportEntry[]> {
-  const raw = await env.WO_KV.get(dailyReportKey(actionTaskId, date));
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as { entries?: DailyReportEntry[] };
-    return Array.isArray(parsed.entries) ? parsed.entries : [];
-  } catch {
-    return [];
+/** Thrown by daily-report writes for an unknown WO (router → 404). */
+export class WorkOrderNotFound extends Error {
+  constructor(public readonly actionTaskId: string) {
+    super("work order not found");
+    this.name = "WorkOrderNotFound";
   }
-}
-
-/** Read the sent-marker for a day (defaults to not-sent). */
-async function readDailySent(
-  env: Env,
-  actionTaskId: string,
-  date: string
-): Promise<{ sent: boolean; pdfUrl: string | null; woNumber: string | null }> {
-  const raw = await env.WO_KV.get(dailyReportSentKey(actionTaskId, date));
-  if (!raw) return { sent: false, pdfUrl: null, woNumber: null };
-  try {
-    const parsed = JSON.parse(raw) as { sent?: boolean; pdfUrl?: string | null; woNumber?: string | null };
-    return {
-      sent: parsed.sent === true,
-      pdfUrl: parsed.pdfUrl ?? null,
-      woNumber: parsed.woNumber ?? null,
-    };
-  } catch {
-    return { sent: false, pdfUrl: null, woNumber: null };
-  }
-}
-
-/** Add a day to the days index (sorted, unique). */
-async function addDailyReportDay(env: Env, actionTaskId: string, date: string): Promise<void> {
-  const raw = await env.WO_KV.get(dailyReportDaysKey(actionTaskId));
-  let days: string[] = [];
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as { days?: string[] };
-      if (Array.isArray(parsed.days)) days = parsed.days;
-    } catch {
-      /* fall through to a fresh list */
-    }
-  }
-  if (!days.includes(date)) days.push(date);
-  days.sort();
-  await env.WO_KV.put(dailyReportDaysKey(actionTaskId), JSON.stringify({ days }));
 }
 
 /**
- * Append a daily-report entry for a WO (default day = today in ET), updating the
- * days index. Returns the updated day. Self-managed in KV, so it does not require
- * the WO to be loadable from Zoho.
+ * Append a daily-report entry for a WO (default day = today in ET). Returns the
+ * updated day.
  */
 export async function addDailyReportEntry(
   env: Env,
   actionTaskId: string,
   input: AddDailyReportEntryInput
 ): Promise<{ date: string; entries: DailyReportEntry[] }> {
-  const date = input.date || todayET();
-  const entries = await readDailyEntries(env, actionTaskId, date);
-  entries.push({ tech: input.tech ?? null, text: input.text, at: new Date().toISOString() });
-  await env.WO_KV.put(dailyReportKey(actionTaskId, date), JSON.stringify({ entries }));
-  await addDailyReportDay(env, actionTaskId, date);
-  return { date, entries };
+  const ref = await woRefForDailyReport(env, actionTaskId);
+  return dailyRepo.addEntry(env, ref, { text: input.text, tech: input.tech ?? null, date: input.date });
 }
 
 /**
@@ -2280,68 +2200,51 @@ export async function editDailyReportEntry(
   text: string,
   date?: string
 ): Promise<{ date: string; entries: DailyReportEntry[] } | null> {
-  const day = date || todayET();
-  const entries = await readDailyEntries(env, actionTaskId, day);
-  if (!Number.isInteger(index) || index < 0 || index >= entries.length) return null;
-  entries[index] = { ...entries[index], text };
-  await env.WO_KV.put(dailyReportKey(actionTaskId, day), JSON.stringify({ entries }));
-  return { date: day, entries };
+  return dailyRepo.editEntry(env, actionTaskId, index, text, date);
 }
 
-/** Delete one daily-report entry by index within its day (KV). Null if out of range. */
+/** Delete one daily-report entry by index within its day. Null if out of range. */
 export async function deleteDailyReportEntry(
   env: Env,
   actionTaskId: string,
   index: number,
   date?: string
 ): Promise<{ date: string; entries: DailyReportEntry[] } | null> {
-  const day = date || todayET();
-  const entries = await readDailyEntries(env, actionTaskId, day);
-  if (!Number.isInteger(index) || index < 0 || index >= entries.length) return null;
-  entries.splice(index, 1);
-  await env.WO_KV.put(dailyReportKey(actionTaskId, day), JSON.stringify({ entries }));
-  return { date: day, entries };
+  return dailyRepo.deleteEntry(env, actionTaskId, index, date);
 }
 
-/** Get a day's report (entries + sent/pdfUrl from the sent-marker). Default = today. */
+/** Get a day's report (entries + sent/pdfUrl). Default = today. */
 export async function getDailyReport(
   env: Env,
   actionTaskId: string,
   date?: string
 ): Promise<DailyReportDay> {
-  const day = date || todayET();
-  const [entries, sent] = await Promise.all([
-    readDailyEntries(env, actionTaskId, day),
-    readDailySent(env, actionTaskId, day),
-  ]);
-  return { date: day, entries, sent: sent.sent, pdfUrl: sent.pdfUrl };
+  return dailyRepo.getDailyReport(env, actionTaskId, date);
 }
 
-/** List which days have reports for a WO (from the index). */
+/** List which days have reports for a WO. */
 export async function listDailyReportDays(env: Env, actionTaskId: string): Promise<{ days: string[] }> {
-  const raw = await env.WO_KV.get(dailyReportDaysKey(actionTaskId));
-  if (!raw) return { days: [] };
-  try {
-    const parsed = JSON.parse(raw) as { days?: string[] };
-    return { days: Array.isArray(parsed.days) ? parsed.days : [] };
-  } catch {
-    return { days: [] };
-  }
+  return dailyRepo.listDailyReportDays(env, actionTaskId);
+}
+
+/** GET …/daily-report/days rows ({date, entries:<count>, sent, pdfUrl}) in one query. */
+export async function listDailyReportDaysEnriched(
+  env: Env,
+  actionTaskId: string
+): Promise<Array<{ date: string; entries: number; sent: boolean; pdfUrl: string | null }>> {
+  return dailyRepo.listDailyReportDaysEnriched(env, actionTaskId);
 }
 
 /**
  * Retrieve the compiled PDF bytes for a WO+date (null if none). Also returns the
- * WO number from the sent-marker (for the download filename) when available.
+ * WO number (for the download filename) when available.
  */
 export async function getDailyReportPdf(
   env: Env,
   actionTaskId: string,
   date: string
 ): Promise<{ bytes: Uint8Array; woNumber: string | null } | null> {
-  const b64 = await env.WO_KV.get(dailyReportPdfKey(actionTaskId, date));
-  if (!b64) return null;
-  const sent = await readDailySent(env, actionTaskId, date);
-  return { bytes: base64ToBytes(b64), woNumber: sent.woNumber };
+  return dailyRepo.getPdf(env, actionTaskId, date);
 }
 
 /**
@@ -2349,7 +2252,7 @@ export async function getDailyReportPdf(
  * under the WO's Daily Report task, post a Cliq digest, and mark the day sent.
  * Returns null if the WO can't be loaded (route -> 404); throws "no entries to
  * send" when the day is empty (route -> 400). Re-sending is allowed: the PDF and
- * sent-marker are overwritten, and an existing sent-marker never blocks a re-send.
+ * sent state are overwritten, and a prior send never blocks a re-send.
  */
 export async function sendDailyReport(
   env: Env,
@@ -2360,21 +2263,18 @@ export async function sendDailyReport(
   if (!wo) return null;
 
   const day = date || todayET();
-  const entries = await readDailyEntries(env, actionTaskId, day);
+  const entries = (await dailyRepo.getDailyReport(env, actionTaskId, day)).entries;
   if (!entries.length) throw new Error("no entries to send");
 
   // Build the compiled report body (lines for the PDF; plain text for Zoho/Cliq).
   const { lines, text } = buildDailyReportContent(wo, day, entries);
   const pdf = buildDailyReportPdf(lines);
-  await env.WO_KV.put(dailyReportPdfKey(actionTaskId, day), bytesToBase64(pdf));
 
-  // The PDF is served by THIS Worker, so the link must point back at it. A service
-  // func can't see the request origin, so we read PUBLIC_WORKER_URL from env; null
-  // when unset (Craig must set it in wrangler.toml for links to resolve).
-  const base = (env.PUBLIC_WORKER_URL || "").trim();
-  const pdfUrl = base
-    ? `${base}/work-orders/${encodeURIComponent(actionTaskId)}/daily-report/${day}/pdf`
-    : null;
+  // The PDF is served by THIS Worker, so the link must point back at it (PUBLIC_WORKER_URL).
+  const pdfUrl = dailyRepo.pdfUrlFor(env, actionTaskId, day);
+
+  // Store the PDF + mark sent FIRST (our own state), then the best-effort side effects.
+  await dailyRepo.markSent(env, woRefOf(wo), day, pdf, pdfUrl);
 
   // Best-effort Zoho record: a dated subtask under the WO's Daily Report task, with
   // the compiled text (+ the PDF link) as its description. Non-fatal.
@@ -2387,39 +2287,26 @@ export async function sendDailyReport(
         description: desc,
         parentTaskId: wo.dailyReportTaskId,
       });
-      // TODO(craig): optional — upload the PDF to the subtask via the /restapi
-      // multipart attachments endpoint; skipped for now because it's on a different
-      // API base and needs its own OAuth scope. The Worker-served pdfUrl is the
-      // reliable path.
     } catch (e) {
       console.warn(`sendDailyReport: Zoho subtask create failed (non-fatal):`, e);
     }
   }
 
-  // Best-effort Cliq post to the #dailyreports channel: header + the full
-  // plain-text report body embedded inline + a clickable PDF link.
+  // Best-effort Cliq post to the #dailyreports channel.
   const header = `📋 Daily Report — WO ${wo.workOrderNumber} (${wo.client}) — ${day}`;
   const msg = buildCliqReportMessage(header, text, pdfUrl);
   await postToCliq(env.CLIQ_DAILY_WEBHOOK, msg);
-
-  // Mark sent (records pdfUrl + WO number for the download filename).
-  await env.WO_KV.put(
-    dailyReportSentKey(actionTaskId, day),
-    JSON.stringify({ sent: true, at: new Date().toISOString(), pdfUrl, woNumber: wo.workOrderNumber })
-  );
 
   return { date: day, entries, sent: true, pdfUrl };
 }
 
 /**
  * Compile ALL entries across ALL days for a WO into ONE cumulative PDF (per-day
- * section headers, entries in chronological order), store it under the cumulative
- * PDF key (`dailyreport-pdf:<id>:cumulative`), record a best-effort Zoho subtask
- * ("Daily Report — Cumulative (through <date>)"), post a Cliq digest, and write the
- * cumulative sent-marker (`dailyreport-sent:<id>:cumulative`). Returns null if the
- * WO can't be loaded (route -> 404); throws "no entries to send" when NO day has
- * entries (route -> 400). Mirrors sendDailyReport (same best-effort patterns), and
- * re-sending is allowed: PDF + sent-marker are overwritten, never refused.
+ * section headers, entries in chronological order), store it on the cumulative
+ * pseudo-day (report_date NULL), record a best-effort Zoho subtask, post a Cliq
+ * digest, and mark it sent. Returns null if the WO can't be loaded (route -> 404);
+ * throws "no entries to send" when NO day has entries (route -> 400). Re-sending is
+ * allowed.
  */
 export async function sendCumulativeReport(
   env: Env,
@@ -2428,32 +2315,16 @@ export async function sendCumulativeReport(
   const wo = await getWorkOrder(env, actionTaskId, { allowCached: true });
   if (!wo) return null;
 
-  // Gather every day that has entries, in chronological order.
-  const { days } = await listDailyReportDays(env, actionTaskId);
-  const sortedDays = [...days].sort();
-  const perDay: Array<{ date: string; entries: DailyReportEntry[] }> = [];
-  for (const d of sortedDays) {
-    const entries = await readDailyEntries(env, actionTaskId, d);
-    if (entries.length) perDay.push({ date: d, entries });
-  }
+  const perDay = await dailyRepo.entriesByDay(env, actionTaskId);
   const totalEntries = perDay.reduce((sum, d) => sum + d.entries.length, 0);
   if (!totalEntries) throw new Error("no entries to send");
 
   const through = todayET();
-
-  // Build the cumulative report body (lines for the PDF; plain text for Zoho/Cliq).
   const { lines, text } = buildCumulativeReportContent(wo, perDay, through);
   const pdf = buildDailyReportPdf(lines);
-  await env.WO_KV.put(dailyReportPdfKey(actionTaskId, "cumulative"), bytesToBase64(pdf));
+  const pdfUrl = dailyRepo.pdfUrlFor(env, actionTaskId, dailyRepo.CUMULATIVE);
+  await dailyRepo.markSent(env, woRefOf(wo), dailyRepo.CUMULATIVE, pdf, pdfUrl);
 
-  // Served by THIS Worker via the existing :date/pdf route with the literal
-  // date=cumulative (getDailyReportPdf reads the same cumulative PDF key).
-  const base = (env.PUBLIC_WORKER_URL || "").trim();
-  const pdfUrl = base
-    ? `${base}/work-orders/${encodeURIComponent(actionTaskId)}/daily-report/cumulative/pdf`
-    : null;
-
-  // Best-effort Zoho record: a cumulative subtask under the WO's Daily Report task.
   if (wo.dailyReportTaskId) {
     try {
       const desc = pdfUrl ? `${text}\n\nPDF: ${pdfUrl}` : text;
@@ -2468,17 +2339,9 @@ export async function sendCumulativeReport(
     }
   }
 
-  // Best-effort Cliq post to the #dailyreports channel: header + the full
-  // plain-text cumulative report body embedded inline (capped) + a PDF link.
   const header = `📋 Daily Report — Cumulative — WO ${wo.workOrderNumber} (${wo.client}) through ${through}`;
   const msg = buildCliqReportMessage(header, text, pdfUrl);
   await postToCliq(env.CLIQ_DAILY_WEBHOOK, msg);
-
-  // Mark sent (overwrite — re-sending is allowed; records pdfUrl + WO number).
-  await env.WO_KV.put(
-    dailyReportSentKey(actionTaskId, "cumulative"),
-    JSON.stringify({ sent: true, at: new Date().toISOString(), pdfUrl, woNumber: wo.workOrderNumber })
-  );
 
   // Return shape mirrors the single-day report; date="cumulative", entries flattened.
   const entries = perDay.flatMap((d) => d.entries);
@@ -2614,20 +2477,6 @@ function buildCliqReportMessage(header: string, body: string, pdfUrl: string | n
   let msg = `${header}\n\n${embedded}`;
   if (pdfUrl) msg += `\n\nView PDF: ${pdfUrl}`;
   return msg;
-}
-
-/** Encode bytes to standard base64 for KV storage. */
-function bytesToBase64(bytes: Uint8Array): string {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-/** Decode standard base64 (from KV) back into bytes. */
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
 }
 
 //------------------------------------------------------------------------------
@@ -2790,12 +2639,7 @@ export async function buildInvoiceNotesMaterial(
 
   // Daily-report entries across ALL days — same gathering the cumulative report
   // uses (days index -> each day's entries). THIS is the main source of tech notes.
-  const { days } = await listDailyReportDays(env, actionTaskId);
-  const perDay: Array<{ date: string; entries: DailyReportEntry[] }> = [];
-  for (const d of [...days].sort()) {
-    const entries = await readDailyEntries(env, actionTaskId, d);
-    if (entries.length) perDay.push({ date: d, entries });
-  }
+  const perDay: Array<{ date: string; entries: DailyReportEntry[] }> = await dailyRepo.entriesByDay(env, actionTaskId);
   const dailyEntryCount = perDay.reduce((sum, d) => sum + d.entries.length, 0);
 
   const hasNotes = !!(wo.notes && wo.notes.trim());
@@ -3741,8 +3585,8 @@ async function woFromParts(
   // Visits are read by the caller from the WO's "Schedule" subtasks (legible), with a
   // legacy base64-trailer fallback for un-migrated WOs.
   const wo = assembleWorkOrder(env, project, taskListId, listDone, action, billing, accessCodes, visits, woNumber, dailyReportTaskId, todoTaskId, statusTask);
-  // DETAIL path: hydrate hours from the KV-backed log (self-managed; not in Zoho).
-  wo.hours = await hoursFromKv(env, action.id);
+  // DETAIL path: hydrate hours from Postgres (self-managed; not in Zoho).
+  wo.hours = await hoursRepo.getHours(env, action.id);
   // DETAIL path: hydrate todos (already built from the fetched subtasks by the caller).
   wo.todos = todos;
   return wo;
@@ -3861,7 +3705,7 @@ function woFromPortalTask(
     schedule: scheduleFromVisits(env, visits),
     visits,
     usedItems: usedItemsFromTask(env, action),
-    // Board rows keep hours light (no per-row KV read); the detail view hydrates from KV.
+    // Board rows keep hours light (no per-row DB read); the detail view hydrates from Postgres.
     hours: { total: 0, entries: [] },
     createdAt: action.createdTime ?? null,
     updatedAt: action.lastModifiedTime ?? null,
@@ -3922,7 +3766,7 @@ function assembleWorkOrder(
     schedule: scheduleFromVisits(env, visits),
     visits: sortVisits(visits),
     usedItems: usedItemsFromTask(env, action),
-    // Hours are self-managed in KV; default to empty here (woFromParts hydrates on detail).
+    // Hours are self-managed in Postgres; default to empty here (woFromParts hydrates on detail).
     hours: { total: 0, entries: [] },
     createdAt: action.createdAt,
     updatedAt: action.updatedAt,

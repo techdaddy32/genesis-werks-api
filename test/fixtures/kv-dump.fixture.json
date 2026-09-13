@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "namespaceId": "aaeba18d5652455496657aa231210af4",
+  "dumpedAt": "2026-09-13T12:00:00.000Z",
+  "keys": {
+    "technicians": "[{\"id\":\"0f9d1c2a-1111-4c1b-9a1e-000000000001\",\"name\":\"Bob Builder\",\"email\":\"bob@example.com\",\"active\":true,\"createdAt\":\"2026-08-20T10:00:00.000Z\",\"updatedAt\":\"2026-08-20T10:00:00.000Z\"},{\"id\":\"0f9d1c2a-1111-4c1b-9a1e-000000000002\",\"name\":\"Alice Amp\",\"email\":\"Alice@Example.com\",\"active\":false,\"createdAt\":\"2026-08-21T10:00:00.000Z\",\"updatedAt\":\"2026-08-22T10:00:00.000Z\"}]",
+    "people": "[{\"id\":\"0f9d1c2a-2222-4c1b-9a1e-000000000001\",\"name\":\"Angie Hartman\",\"email\":\"\",\"active\":true,\"zohoUser\":\"Angie H\",\"createdAt\":\"2026-08-20T10:00:00.000Z\",\"updatedAt\":\"2026-08-20T10:00:00.000Z\"},{\"id\":\"0f9d1c2a-2222-4c1b-9a1e-000000000002\",\"name\":\"Craig\",\"email\":\"craig@fhiflorida.com\",\"active\":true,\"createdAt\":\"2026-08-20T10:00:00.000Z\",\"updatedAt\":\"2026-08-20T10:00:00.000Z\"},{\"id\":\"0f9d1c2a-2222-4c1b-9a1e-000000000003\",\"name\":\"Bob (person)\",\"email\":\"bob@example.com\",\"active\":true,\"zohoUser\":null,\"createdAt\":\"2026-08-20T10:00:00.000Z\",\"updatedAt\":\"2026-08-20T10:00:00.000Z\"}]",
+    "admin:config": "{\"reportAccess\":[\"craig@fhiflorida.com\",\"Angie@fhiflorida.com\"],\"zohoUserOptions\":[\"Craig\",\"Angie H\"],\"schedulingConfirmer\":\"Angie Hartman\"}",
+    "hours:T1001": "{\"entries\":[{\"tech\":\"bob@example.com\",\"hours\":2,\"at\":\"2026-09-01T14:00:00.000Z\",\"note\":\"rough-in\"},{\"tech\":\"alice@example.com\",\"hours\":1.5,\"at\":\"2026-09-01\",\"note\":null},{\"tech\":null,\"hours\":0.25,\"at\":\"2026-09-02T09:00:00.000Z\",\"note\":\"callback\"},{\"tech\":\"bob@example.com\",\"hours\":3,\"at\":\"2026-09-03T12:00:00.000Z\",\"note\":\"trim-out\"}],\"total\":6.75}",
+    "hours:T1002": "{\"entries\":[{\"tech\":\"bob@example.com\",\"hours\":4,\"at\":\"2026-09-04T13:00:00.000Z\",\"note\":null},{\"tech\":\"bob@example.com\",\"hours\":0.5,\"at\":\"2026-09-04T18:00:00.000Z\",\"note\":\"travel\"}],\"total\":4.5}",
+    "dailyreport-days:T1001": "{\"days\":[\"2026-09-01\",\"2026-09-02\"]}",
+    "dailyreport:T1001:2026-09-01": "{\"entries\":[{\"tech\":\"bob@example.com\",\"text\":\"Pulled wire to rack\",\"at\":\"2026-09-01T15:00:00.000Z\"},{\"tech\":\"bob@example.com\",\"text\":\"Terminated 6 drops\",\"at\":\"2026-09-01T20:00:00.000Z\"}]}",
+    "dailyreport:T1001:2026-09-02": "{\"entries\":[{\"tech\":null,\"text\":\"Customer walkthrough\",\"at\":\"2026-09-02T21:00:00.000Z\"}]}",
+    "dailyreport-sent:T1001:2026-09-01": "{\"sent\":true,\"at\":\"2026-09-01T21:00:00.000Z\",\"pdfUrl\":\"https://old-worker.example/work-orders/T1001/daily-report/2026-09-01/pdf\",\"woNumber\":\"FHI-672-WO-2026-0017\"}",
+    "dailyreport-pdf:T1001:2026-09-01": "JVBERi0xLjQgZml4dHVyZQ==",
+    "dailyreport-days:T1002": "{\"days\":[\"2026-09-04\"]}",
+    "dailyreport:T1002:2026-09-04": "{\"entries\":[{\"tech\":\"bob@example.com\",\"text\":\"Swapped keypad\",\"at\":\"2026-09-04T19:00:00.000Z\"}]}",
+    "reminder:I-500": "{\"issueId\":\"I-500\",\"projectId\":\"ZP-1\",\"projectName\":\"Acme, John - 123 Main St - SERVICE\",\"title\":\"Order the bracket\",\"assigneeName\":\"Angie Hartman\",\"remindAt\":\"2026-09-20T13:00:00.000Z\",\"message\":\"before the trim visit\",\"fired\":false,\"createdAt\":\"2026-09-10T10:00:00.000Z\"}",
+    "billable:T1002": "false",
+    "billable:T1001": "true",
+    "wo_seq:2026:__global__": "41",
+    "zoho_scopes": "ZohoProjects.portals.READ,ZohoProjects.projects.ALL",
+    "google_pending": "{\"clientId\":\"x\",\"clientSecret\":\"y\"}",
+    "proj:search:svc:": "{\"at\":1,\"value\":[]}",
+    "tasks:woTagged": "{\"at\":1,\"value\":[]}",
+    "ai:agg:all": "{\"at\":1,\"items\":[],\"meta\":{}}",
+    "something:new": "?"
+  },
+  "workOrders": {
+    "T1001": { "workOrderNumber": "FHI-672-WO-2026-0017", "projectId": "ZP-1", "projectKey": "FHI-672", "projectName": "Acme, John - 123 Main St - SERVICE", "client": "Acme, John", "subject": "Prewire" },
+    "T1002": { "workOrderNumber": "FHI-672-WO-2026-0018", "projectId": "ZP-1", "projectKey": "FHI-672", "projectName": "Acme, John - 123 Main St - SERVICE", "client": "Acme, John", "subject": "Keypad swap" }
+  }
+}

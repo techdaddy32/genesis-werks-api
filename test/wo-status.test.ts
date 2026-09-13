@@ -207,6 +207,15 @@ vi.mock("../src/calendar", () => ({
   listEvents: async () => [],
 }));
 vi.mock("../src/cliq", () => ({ postToCliq: async () => {} }));
+// F3: WorkOrder.hours is hydrated from Postgres (repo/hours.ts). These suites exercise the
+// Zoho-side service layer without a database, so the hours repo is an empty in-memory stand-in
+// (the same role the old `WO_KV: { get: () => null }` stub played).
+vi.mock("../src/repo/hours", () => ({
+  getHours: async () => ({ total: 0, entries: [] }),
+  appendHoursEntry: async () => ({ total: 0, entries: [] }),
+  editHoursEntry: async () => null,
+  deleteHoursEntry: async () => null,
+}));
 vi.mock("../src/pdf", () => ({ buildDailyReportPdf: () => new Uint8Array(), buildTextPdf: () => new Uint8Array() }));
 vi.mock("../src/wonumber", () => ({
   mintWorkOrderNumber: async () => ({
@@ -227,7 +236,6 @@ import * as service from "../src/service";
 import { _clearCache } from "../src/cache";
 
 const env: any = {
-  WO_KV: { get: async () => null, put: async () => {}, delete: async () => {} },
   ZOHO_WO_FIELD: "work_order_hash",
   ZOHO_PORTAL_ID: "portal",
   ZOHO_PURCHASING_PROJECT_ID: PURCHASING_PROJECT,
@@ -337,7 +345,10 @@ describe("7-state WO status (hybrid, backward-compatible)", () => {
     expect(h.tasks.get(wo.statusTaskId!)!.customFields.wo_cycle_status).toBe("Ready for Billing");
   });
 
-  it("migration: a legacy WO (no Status task) gets one seeded from its current status; Completed → Closed; KV billable → billing_status", async () => {
+  // F3 (2026-09-13): the KV `billable:<id>` flag is retired with WO_KV (its values are preserved as
+  // events by scripts/import-kv.ts, never read by the Worker again). The migration now reports the
+  // default billing_status ("Billable") for a legacy WO without one — was "Non-Billable" from KV.
+  it("migration: a legacy WO (no Status task) gets one seeded from its current status; Completed → Closed; default billing_status", async () => {
     const wo = await service.createWorkOrder(env, baseInput);
     // Strip the new-model bits to simulate a pre-change WO advanced to "Completed" the old way
     // (Action task closed; Billing left open so its fields are writable).
@@ -349,12 +360,12 @@ describe("7-state WO status (hybrid, backward-compatible)", () => {
     }
     h.tasks.get(wo.actionTaskId)!.isCompleted = true;
     h.tasks.get(wo.actionTaskId)!.raw.wo_schedule_status = "Completed";
-    const legacyEnv = { ...env, WO_KV: { get: async (k: string) => (k.startsWith("billable:") ? "false" : null), put: async () => {}, delete: async () => {} } };
+    const legacyEnv = { ...env };
 
     const dry = await service.migrateStatusModel(legacyEnv, { apply: false, limit: 10 });
     expect(dry.dryRun).toBe(true);
     expect(dry.pending).toBe(1);
-    expect(dry.rows[0]).toMatchObject({ hasStatusTask: false, fromStatus: "Closed", toStatus: "Closed", billingStatus: "Non-Billable", workTaskStatus: "Completed", billingTaskStatus: "Pending" });
+    expect(dry.rows[0]).toMatchObject({ hasStatusTask: false, fromStatus: "Closed", toStatus: "Closed", billingStatus: "Billable", workTaskStatus: "Completed", billingTaskStatus: "Pending" });
     // the closed Action task's field write is skipped (Zoho refuses it; the read falls back to Completed)
     expect(dry.rows[0].needs).toEqual(["status-task", "billing-task-status", "billing-status"]);
     expect(dry.rows[0].skippedClosed).toEqual(["work-task-status"]);
@@ -365,7 +376,7 @@ describe("7-state WO status (hybrid, backward-compatible)", () => {
     const st = [...h.tasks.values()].find((t) => t.name === "Work Order Status")!;
     expect(st.customFields.wo_cycle_status).toBe("Closed");
     expect(st.workOrderHash).toBe("FHI-672-WO-2026-0001");
-    expect(h.tasks.get(wo.billingTaskId!)!.customFields.billing_status).toBe("Non-Billable");
+    expect(h.tasks.get(wo.billingTaskId!)!.customFields.billing_status).toBe("Billable");
     expect(h.tasks.get(wo.actionTaskId)!.customFields.wo_task_status).toBeUndefined();
     expect(h.tasks.get(wo.billingTaskId!)!.customFields.wo_task_status).toBe("Pending");
     // idempotent
@@ -373,7 +384,7 @@ describe("7-state WO status (hybrid, backward-compatible)", () => {
     expect(again.pending).toBe(0);
     const read = await service.getWorkOrder(legacyEnv, wo.id);
     expect(read?.woStatus).toBe("Closed");
-    expect(read?.billingStatus).toBe("Non-Billable");
+    expect(read?.billingStatus).toBe("Billable");
     expect(read?.tasks.find((t) => t.kind === "work")?.taskStatus).toBe("Completed"); // fallback from the closed flag
   });
 
