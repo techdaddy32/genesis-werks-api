@@ -22,6 +22,18 @@ Never in this repo or the vault. See `the-bridge/knowledge/secrets-location.md` 
 Worker secrets are set with `npx wrangler secret put <NAME>` from this folder (cmd, not PowerShell).
 Planned additions: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_JWT_SECRET`, `POSTMARK_TOKEN` (P4c), `BOOKS_*` (P7).
 
+### Added at F2 (2026-09-13)
+| Name | Kind | Where | Purpose |
+|---|---|---|---|
+| `HYPERDRIVE` | binding | wrangler.toml `[[hyperdrive]]` (id e33320e5…) | Postgres transport for `src/db.ts` (`prepare:false`, `max:5`, `fetch_types:false`) |
+| `TENANT_ID` | var | wrangler.toml `[vars]` | tenant served by this deployment (FHI `f4100000-0000-4000-8000-000000000001`); bound per transaction with `SET LOCAL app.tenant_id` |
+| `ALLOW_TENANT_HEADER` | var | NEVER in prod; `.dev.vars` only | `true` lets `X-Tenant-Id` override `TENANT_ID` (dev/test) |
+| `INTERNAL_TOKEN` | secret | `npx wrangler secret put INTERNAL_TOKEN` | shared secret (header `X-Internal-Token`) for `POST /internal/events/fanout`, the Supabase DB-webhook receiver (stub in F2). Route answers 503 until set. Use the SAME value in the Supabase webhook's HTTP headers |
+| `DATABASE_URL` | local only | `.dev.vars` / `TEST_DATABASE_URL` | direct `postgres://` URL used ONLY when `HYPERDRIVE` is absent (vitest, local dev). Never set in prod |
+| `genesis_api` DB role | Postgres | Supabase SQL editor: `ALTER ROLE genesis_api LOGIN PASSWORD '…'` | NOBYPASSRLS role the Worker must connect as (via Hyperdrive) so `tenant_isolation` RLS applies. `postgres`/`service_role` BYPASS RLS |
+
+Health: `GET /health` now also returns `db: {ok, latencyMs, via}` and `tenant` (additive fields).
+
 ## Deploy
 `npx wrangler deploy` from this folder on Craig's machine. Full steps: `DEPLOY.md` (to be rewritten at OPS2).
 

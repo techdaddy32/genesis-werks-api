@@ -55,3 +55,12 @@ GOOGLE_OAUTH_REFRESH_TOKEN=your-google-oauth-refresh-token
 # --- Worker / app -------------------------------------------------------------
 APP_ORIGIN=https://app.fhiflorida.com                # LV Plan app origin, for CORS. TODO(craig): confirm.
 WO_SEQUENCE_SCOPE=global                             # global | per_project
+
+# --- Database / tenancy (F2) ----------------------------------------------------
+# LOCAL/TEST ONLY: direct Postgres URL used by src/db.ts when the HYPERDRIVE binding is
+# absent (vitest, or `wrangler dev` without Hyperdrive). Production goes through Hyperdrive
+# — never set DATABASE_URL there. The tests default to the same value via TEST_DATABASE_URL.
+DATABASE_URL=postgres://genesis_api:test@localhost:5432/gw_test
+TENANT_ID=f4100000-0000-4000-8000-000000000001   # FHI tenant (0002_seed_fhi.sql); also in wrangler.toml [vars]
+ALLOW_TENANT_HEADER=false                         # true = X-Tenant-Id header may override TENANT_ID (dev only)
+INTERNAL_TOKEN=choose-a-long-random-string        # SECRET in prod (`wrangler secret put INTERNAL_TOKEN`); gates POST /internal/events/fanout

@@ -66,6 +66,11 @@ WO_SEQUENCE_SCOPE = "global"                        # "global" | "per_project"
 # Can be promoted to a secret later via `wrangler secret put ADMIN_PIN` (a secret overrides this).
 # ADMIN_PIN = "3825"
 
+# --- Tenancy (F2). The tenant this deployment serves; FHI = tenant #1 (0002_seed_fhi.sql).
+# Resolved by src/tenant.ts and bound per-transaction with SET LOCAL app.tenant_id (src/db.ts).
+TENANT_ID = "f4100000-0000-4000-8000-000000000001"
+# ALLOW_TENANT_HEADER = "true"   # dev/test ONLY: lets X-Tenant-Id override TENANT_ID. Never in prod.
+
 # --- The Zoho task custom-field that stores the full WO reference. Confirmed 2026-08-19. ---
 ZOHO_WO_FIELD = "work_order_hash"
 
@@ -169,9 +174,13 @@ ZOHO_ORDER_STATUS_FIELD = "order_status"
 #   wrangler secret put CLIQ_ACTIONITEMS_WEBHOOK  # Action Items channel — assign/reassign posts (S8)
 #   # Anthropic API key for the invoice-notes AI endpoint (POST /work-orders/:id/invoice-notes):
 #   wrangler secret put ANTHROPIC_API_KEY
+#   # F2 — shared secret for POST /internal/events/fanout (Supabase DB webhook → Worker):
+#   wrangler secret put INTERNAL_TOKEN
 #------------------------------------------------------------------------------
 
 
+# Hyperdrive `genesis-db` → Supabase Postgres (session pooler). src/db.ts reads
+# env.HYPERDRIVE.connectionString; DATABASE_URL (.dev.vars) is the test/dev fallback only.
 [[hyperdrive]]
 binding = "HYPERDRIVE"
 id = "e33320e5f0794cbcacc064365b305746"

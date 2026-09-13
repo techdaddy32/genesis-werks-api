@@ -6,6 +6,24 @@
 export interface Env {
   // --- Bindings ---
   WO_KV: KVNamespace;
+  /** Hyperdrive → Supabase Postgres (genesis-db). See src/db.ts. */
+  HYPERDRIVE?: Hyperdrive;
+  /** R2 bucket `genesis-files` (plan images / photos / PDFs). Wired at a later row. */
+  FILES?: R2Bucket;
+
+  // --- Database / tenancy (F2) ---
+  /**
+   * TEST/DEV ONLY fallback used by src/db.ts when the HYPERDRIVE binding is absent
+   * (vitest against a local Postgres, or `.dev.vars`). Never set in production —
+   * the Worker must go through Hyperdrive.
+   */
+  DATABASE_URL?: string;
+  /** The tenant this deployment serves (single-tenant for now). FHI = f4100000-0000-4000-8000-000000000001. */
+  TENANT_ID?: string;
+  /** "true" lets an `X-Tenant-Id` request header override TENANT_ID. Dev/test only; never set in prod. */
+  ALLOW_TENANT_HEADER?: string;
+  /** Shared secret for POST /internal/events/fanout (header X-Internal-Token). SECRET. */
+  INTERNAL_TOKEN?: string;
 
   // --- Zoho ---
   ZOHO_REFRESH_TOKEN: string;

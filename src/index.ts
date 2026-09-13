@@ -69,6 +69,9 @@ import * as admin from "./admin";
 import { ConfigError, isWoFieldConfigured, adminPin, TASK_STATUSES, BILLING_STATUSES } from "./config";
 import { ZohoError, ZohoThrottleError, resolveTaskField } from "./zoho";
 import { CalendarError } from "./calendar";
+import { dbHealth } from "./db";
+import { resolveTenant } from "./tenant";
+import { handleEventFanout } from "./events";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -97,6 +100,12 @@ export default {
     try {
       // GET /health
       if (path === "/health" && method === "GET") {
+        // F2: db + tenant are ADDITIVE fields; the existing keys are unchanged.
+        const db = await dbHealth(env);
+        const tenant = await resolveTenant(request, env).then(
+          (t) => t.tenantId,
+          () => null
+        );
         return json(cors, 200, {
           ok: true,
           service: "fhi-service-wo",
@@ -107,7 +116,17 @@ export default {
             googleAuthMethod: env.GOOGLE_AUTH_METHOD,
             defaultCalendar: env.DEFAULT_CALENDAR_ID,
           },
+          db,
+          tenant,
         });
+      }
+
+      // POST /internal/events/fanout — Supabase DB-webhook receiver (F2 stub; see events.ts).
+      // Guarded by X-Internal-Token = env.INTERNAL_TOKEN. Not a client route.
+      if (path === "/internal/events/fanout") {
+        if (method !== "POST") return methodNotAllowed(cors);
+        const r = await handleEventFanout(request, env);
+        return json(cors, r.status, r.body);
       }
 
       const baseUrl = url.origin;
