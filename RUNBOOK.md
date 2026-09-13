@@ -13,7 +13,7 @@ Run-list: `../pipeline/2026-09-12-suite-own-database-run-list.md`._
 | Cloudflare R2 | `fhi-site-photos` (pre-existing, 2026-08-29) | LIVE | F-85 hub photo store — decide at P3a whether to merge into `genesis-files` or keep |
 | Cloudflare Hyperdrive | — | NOT YET | create after the Supabase project exists (needs its pooler connection string) |
 | Supabase | org "Horizon" · project `genesis-werks-prod` | NOT YET | Craig creates (see below) |
-| GitHub | `genesis-werks-api` (working name) | NOT YET | repo initialized 2026-09-12 at horizon/projects/genesis-werks/code from the LIVE code (lv-plan-analyzer/dev-projects/service-work-orders/backend) |
+| GitHub | https://github.com/techdaddy32/genesis-werks-api (personal account; transfer to a Horizon org later if one is created) | PUSHED 2026-09-13 | main tracks origin/main |
 | Google Calendar | `notifications@fhiflorida.com` (Tech Schedule) | LIVE | unchanged |
 | Zoho Projects / CRM | portal 705869960 | LIVE (system of record until each module's cutover) | |
 

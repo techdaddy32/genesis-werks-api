@@ -17,5 +17,9 @@
     "typescript": "^5.4.0",
     "vitest": "^2.1.9",
     "wrangler": "^4.125.0"
+  },
+  "dependencies": {
+    "git": "^0.1.5",
+    "status": "^0.0.13"
   }
 }
