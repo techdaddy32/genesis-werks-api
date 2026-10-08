@@ -1,4 +1,5 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
+// row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — SYNC_CRON_ORGANIZATION_IDS
 //==============================================================================
 // Shared domain + wire types for the FHI Service Work Order backend.
 //==============================================================================
@@ -165,6 +166,8 @@ export interface Env {
   SYNC_AUTH_MODE?: string;
   /** Default REQUESTED organization when X-Organization-Id is absent; still validated against membership. */
   ORGANIZATION_ID?: string;
+  /** W2: comma-separated Organization ids the scheduled() walk-tool cron sweeps (RLS forbids enumerating tenants). Falls back to ORGANIZATION_ID. */
+  SYNC_CRON_ORGANIZATION_IDS?: string;
 }
 
 /**

@@ -1,4 +1,5 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
+// row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — designerB (non-admin designer), MemorySink head/get/list, ownerEvents
 //==============================================================================
 // test/sync/_db.ts — helpers for the walk-tool sync suite (NOT a test file).
 //
@@ -16,7 +17,7 @@
 import postgres from "postgres";
 import type { Env } from "../../src/types";
 import { handleSyncRoute, type SyncResponse } from "../../src/sync/routes";
-import type { FileSink } from "../../src/sync/files";
+import type { FileStore } from "../../src/sync/files";
 
 export const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL ?? "postgres://genesis_api:test@127.0.0.1:54329/gw_sandbox";
 export const TEST_OWNER_DATABASE_URL = process.env.TEST_OWNER_DATABASE_URL ?? "postgres://postgres@127.0.0.1:54329/gw_sandbox";
@@ -46,18 +47,44 @@ export async function dbAvailable(): Promise<boolean> {
   return true;
 }
 
-/** In-memory stand-in for the R2 binding (only the `put` the upload path uses). */
-export class MemorySink implements FileSink {
-  objects = new Map<string, { bytes: Uint8Array; contentType?: string }>();
-  async put(key: string, value: ArrayBuffer | ReadableStream | string, options?: { httpMetadata?: { contentType?: string } }): Promise<unknown> {
+/** In-memory stand-in for the R2 binding: put (upload path) + head/get/list (W2 cron). Never deletes. */
+export class MemorySink implements FileStore {
+  objects = new Map<string, { bytes: Uint8Array; contentType?: string; sha256?: string }>();
+  async put(key: string, value: ArrayBuffer | ReadableStream | string, options?: { httpMetadata?: { contentType?: string }; sha256?: string }): Promise<unknown> {
     const bytes = typeof value === "string" ? new TextEncoder().encode(value) : value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(await new Response(value).arrayBuffer());
-    this.objects.set(key, { bytes, contentType: options?.httpMetadata?.contentType });
+    this.objects.set(key, { bytes, contentType: options?.httpMetadata?.contentType, sha256: options?.sha256 });
     return { key };
   }
+  async head(key: string) {
+    const o = this.objects.get(key);
+    if (!o) return null;
+    // Like R2: the sha256 checksum is present only when the uploader supplied it.
+    const checksums = o.sha256 ? { sha256: hexToBuf(o.sha256) } : undefined;
+    return { size: o.bytes.byteLength, checksums };
+  }
+  async get(key: string) {
+    const o = this.objects.get(key);
+    if (!o) return null;
+    const bytes = o.bytes;
+    return { arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
+  }
+  async list(options: { prefix: string; cursor?: string; limit?: number }) {
+    const all = [...this.objects.entries()].filter(([k]) => k.startsWith(options.prefix)).sort(([a], [b]) => (a < b ? -1 : 1));
+    const start = options.cursor ? Number(options.cursor) : 0;
+    const limit = options.limit ?? 1000;
+    const slice = all.slice(start, start + limit);
+    const truncated = start + limit < all.length;
+    return { objects: slice.map(([key, o]) => ({ key, size: o.bytes.byteLength })), truncated, cursor: truncated ? String(start + limit) : undefined };
+  }
+}
+function hexToBuf(hex: string): ArrayBuffer {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out.buffer;
 }
 
 /** Worker Env for the sync routes: genesis_api URL, sandbox auth stub, in-memory FILES. */
-export function syncEnv(overrides: Partial<Env> = {}, sink: FileSink = new MemorySink()): Env {
+export function syncEnv(overrides: Partial<Env> = {}, sink: FileStore = new MemorySink()): Env {
   return {
     DATABASE_URL: TEST_DATABASE_URL,
     SYNC_ROUTES: "on",
@@ -70,6 +97,7 @@ export function syncEnv(overrides: Partial<Env> = {}, sink: FileSink = new Memor
 export interface TestOrg {
   org: string;
   designer: string; // admin
+  designerB: string; // designer, NOT admin (W2: override 403, second-designer 409)
   techA: string;
   techB: string;
   office: string;
@@ -95,7 +123,7 @@ const T0 = "2026-10-07T12:00:00Z";
 /** Build a fresh fictitious Organization with the shapes the push/pull rules need. Owner connection. */
 export async function createTestOrg(owner: Sql, label = "sync-test"): Promise<TestOrg> {
   const t: TestOrg = {
-    org: uuid(), designer: uuid(), techA: uuid(), techB: uuid(), office: uuid(), revoked: uuid(),
+    org: uuid(), designer: uuid(), designerB: uuid(), techA: uuid(), techB: uuid(), office: uuid(), revoked: uuid(),
     account: uuid(), project: uuid(), drawing: uuid(), whiteboard: uuid(), version: uuid(),
     page1: uuid(), page2: uuid(), boardPage: uuid(), layerDesign: uuid(), layerFieldNotes: uuid(), layerBoard: uuid(),
     rooms: { foyer: uuid(), kitchen: uuid() }, locationTv: uuid(),
@@ -105,6 +133,7 @@ export async function createTestOrg(owner: Sql, label = "sync-test"): Promise<Te
     await tx`insert into shared.organizations (id, slug, display_name, custom) values (${t.org}, ${slug}, ${`Test Org ${slug}`}, '{"fictitious": true}')`;
     await tx`insert into shared.members (id, organization_id, email, display_name, role, is_admin, active) values
       (${t.designer}, ${t.org}, ${`designer@${slug}.example`}, 'Test Designer', 'designer', true, true),
+      (${t.designerB}, ${t.org}, ${`designer-b@${slug}.example`}, 'Test Designer B', 'designer', false, true),
       (${t.techA},    ${t.org}, ${`tech-a@${slug}.example`},   'Test Tech A',    'technician', false, true),
       (${t.techB},    ${t.org}, ${`tech-b@${slug}.example`},   'Test Tech B',    'technician', false, true),
       (${t.office},   ${t.org}, ${`office@${slug}.example`},   'Test Office',    'office', false, true),
@@ -214,4 +243,15 @@ export async function ownerCount(owner: Sql, table: string, where: Record<string
   for (let i = 1; i < conds.length; i++) clause = owner`${clause} and ${conds[i]}`;
   const rows = await owner<{ n: string }[]>`select count(*)::text as n from ${owner(table)} where ${clause}`;
   return Number(rows[0].n);
+}
+
+/** Owner-side event reader (bypasses RLS) for assertions. */
+export async function ownerEvents(owner: Sql, where: { ref_id?: string; event_type?: string; organization_id?: string }): Promise<Record<string, unknown>[]> {
+  return owner<Record<string, unknown>[]>`
+    select id, event_type, ref_table, ref_id, project_id, payload, actor, actor_type, idempotency_key, occurred_at
+      from shared.events
+     where (${where.ref_id ?? null}::uuid is null or ref_id = ${where.ref_id ?? null})
+       and (${where.event_type ?? null}::text is null or event_type = ${where.event_type ?? null})
+       and (${where.organization_id ?? null}::uuid is null or organization_id = ${where.organization_id ?? null})
+     order by created_at`;
 }

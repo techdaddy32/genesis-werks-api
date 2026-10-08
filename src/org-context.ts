@@ -1,4 +1,5 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
+// row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — systemContext() for the cron (no actor; app.role = system)
 //==============================================================================
 // org-context.ts — Organization context for the walk-tool / drawing-layer routes.
 //
@@ -48,12 +49,14 @@ export type Sql = postgres.Sql<{}>;
 export type Tx = postgres.TransactionSql<{}>;
 
 export type MemberRole = "designer" | "technician" | "office" | "admin";
+/** The cron's binding: not a member. Only systemContext() produces it. */
+export type ContextRole = MemberRole | "system";
 
 export interface OrganizationContext {
   organizationId: string;
   /** shared.members.id of the acting member — what created_by / actor columns hold. */
   actorId: string;
-  role: MemberRole;
+  role: ContextRole;
   isAdmin: boolean;
   /** members.active = false: still authenticated and a member, but pushes are HELD (actor_revoked). */
   revoked: boolean;
@@ -205,6 +208,25 @@ export async function resolveOrganizationContext(
     revoked: !member.active,
     orgSource,
     authSource: principal.source,
+    env,
+  };
+}
+
+/**
+ * W2 — the scheduled() handler's context for ONE Organization: no member, no admin powers,
+ * app.user_id = '' and app.role = 'system'. Events it writes carry actor NULL / actor_type
+ * 'system'. Still goes through withOrg (SET LOCAL app.org_id) — the cron is not a bypass.
+ */
+export function systemContext(env: Env, organizationId: string): OrganizationContext {
+  if (!isUuid(organizationId)) throw new DbError(`systemContext: organizationId is not a UUID (${String(organizationId)})`);
+  return {
+    organizationId: organizationId.toLowerCase(),
+    actorId: "",
+    role: "system",
+    isAdmin: false,
+    revoked: false,
+    orgSource: "env",
+    authSource: "system",
     env,
   };
 }

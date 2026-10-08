@@ -1,4 +1,5 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
+// row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — scheduled(): walk-tool cron (lease warnings, file verify, orphan report) behind SYNC_ROUTES
 //==============================================================================
 // index.ts — Worker entry point: HTTP router + cron handler.
 //
@@ -76,6 +77,7 @@ import { dbHealth } from "./db";
 import { resolveTenant } from "./tenant";
 import { handleEventFanout } from "./events";
 import { handleSyncRoute } from "./sync/routes";
+import { runSyncCron } from "./sync/cron";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -1175,6 +1177,16 @@ export default {
         (e) => console.error("reminders scan failed:", e)
       )
     );
+    // W2 (sandbox/walk-tool): lease-expiry warnings (checkout.expiring), file sha256 verification
+    // (uploaded → verified) and the report-only orphan sweep. Gated like the routes.
+    if (env.SYNC_ROUTES === "on") {
+      ctx.waitUntil(
+        runSyncCron(env).then(
+          (r) => console.log("walk-tool cron:", JSON.stringify(r)),
+          (e) => console.error("walk-tool cron failed:", e)
+        )
+      );
+    }
   },
 };
 

@@ -1,4 +1,5 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
+// row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — rules engine wired after the event; walks.project_id immutable via push (attach route only)
 //==============================================================================
 // sync/push.ts — POST /sync/push: per-row idempotent upsert (walk spec §5.6–5.7).
 //
@@ -46,6 +47,7 @@
 import type { OrganizationContext, Tx } from "../org-context";
 import { withOrg } from "../org-context";
 import { isUuid } from "../db";
+import { evaluateRules } from "../rules";
 import {
   TABLE_SPECS,
   PARENT_TARGETS,
@@ -252,6 +254,21 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
     }
   } else {
     row.created_by = existing.created_by; // a device can never re-author a row
+    // W2: a walk's project anchor is set ONCE — by the device on first push (attached from the
+    // start) or by POST /walks/:id/attach (room_hint resolution + room_hint_pending rows). A push
+    // may never attach, re-attach or detach an existing walk. 'schema' is the closest 036 reason.
+    if (table === "places.walks" && Object.prototype.hasOwnProperty.call(row, "project_id")) {
+      const incomingProject = isUuid(row.project_id) ? (row.project_id as string).toLowerCase() : null;
+      if (incomingProject !== ((existing.project_id as string | null) ?? null)) {
+        return {
+          kind: "rejected", reason: "schema",
+          detail: existing.project_id == null
+            ? "walks.project_id cannot be set by push; use POST /walks/:id/attach"
+            : "walks.project_id is immutable once attached (pull the attached walk; detach is not a push)",
+          projectId: (existing.project_id as string | null) ?? null,
+        };
+      }
+    }
   }
 
   // --- parent-exists -----------------------------------------------------------------
@@ -344,6 +361,7 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
     if (after.revision === revision) {
       // Idempotent replay: identical revision already stored. Heal a missing event, write nothing else.
       await appendSyncEvent(sp, ctx, table, finalRow, projectId, "noop", rowClass);
+      await runRules(sp, ctx, table, { ...after, ...finalRow }, projectId, "updated", rowClass);
       return { kind: "accepted", accepted: { table, id, revision, op: "noop", ...(redirected ? { redirected } : {}) } };
     }
     if (after.deleted_at != null && finalRow.deleted_at == null && revision > Number(after.revision)) {
@@ -354,6 +372,8 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
 
   const op: RowOp = !existing ? "created" : tombstoning ? "tombstoned" : "updated";
   await appendSyncEvent(sp, ctx, table, finalRow, projectId, op, rowClass);
+  // W2: Hybrid H field_rules — same transaction as the event (capture.flagged → field_flag, placement.as_walked → verify_placement).
+  await runRules(sp, ctx, table, { ...merged, ...finalRow }, projectId, op, rowClass);
 
   // --- structure_changes (Gate A: materialized review rows) ---------------------------
   if (projectId && state) {
@@ -448,6 +468,21 @@ async function appendSyncEvent(sp: Tx, ctx: OrganizationContext, table: SyncTabl
             ${sp.json({ op: op === "noop" ? "updated" : op, class: rowClass, revision: row.revision, walk_id: row.walk_id ?? null } as never)},
             ${ctx.actorId}, 'member', ${(row.device_id as string | null) ?? null}, ${key}, ${row.occurred_at as string})
     on conflict (organization_id, idempotency_key) do nothing`;
+}
+
+/** Evaluate shared.field_rules for the event this row just produced. Idempotent (partial UNIQUE on action_items). */
+async function runRules(sp: Tx, ctx: OrganizationContext, table: SyncTable, row: JsonRow, projectId: string | null, op: RowOp, _rowClass: RowClass): Promise<void> {
+  const spec = TABLE_SPECS[table];
+  const eventType = spec.eventType(row, op === "noop" ? "updated" : op);
+  await evaluateRules(sp, {
+    organizationId: ctx.organizationId,
+    actorId: ctx.actorId,
+    eventType,
+    refTable: table,
+    refId: row.id as string,
+    row,
+    projectId,
+  });
 }
 
 interface StructureChangeInput {
