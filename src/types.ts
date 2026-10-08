@@ -1,3 +1,4 @@
+// row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 //==============================================================================
 // Shared domain + wire types for the FHI Service Work Order backend.
 //==============================================================================
@@ -156,6 +157,14 @@ export interface Env {
   SETUP_TOKEN?: string;
   /** PIN gating the /admin config endpoints. Defaults to "3825" — see config.ts adminPin(). */
   ADMIN_PIN?: string;
+
+  // --- Walk-tool sync routes (W1, sandbox/walk-tool). See src/org-context.ts + src/sync/. ---
+  /** "on" mounts POST /sync/push, GET /sync/pull, PUT /sync/files/:id (new-schema routes). Unset = 404. */
+  SYNC_ROUTES?: string;
+  /** "actor_header" = sandbox stub (X-Actor-Id / Bearer <members.id>). "jwt" reserved. Unset = 503 (fails closed). */
+  SYNC_AUTH_MODE?: string;
+  /** Default REQUESTED organization when X-Organization-Id is absent; still validated against membership. */
+  ORGANIZATION_ID?: string;
 }
 
 /**

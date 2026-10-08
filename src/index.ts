@@ -1,3 +1,4 @@
+// row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 //==============================================================================
 // index.ts — Worker entry point: HTTP router + cron handler.
 //
@@ -74,6 +75,7 @@ import { CalendarError } from "./calendar";
 import { dbHealth } from "./db";
 import { resolveTenant } from "./tenant";
 import { handleEventFanout } from "./events";
+import { handleSyncRoute } from "./sync/routes";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -1138,6 +1140,15 @@ export default {
         return methodNotAllowed(cors);
       }
 
+      // W1 (sandbox/walk-tool): POST /sync/push · GET /sync/pull · PUT /sync/files/:id — the
+      // new-schema (001→090) walk-tool routes. Gated by env.SYNC_ROUTES === "on" ([env.sandbox]):
+      // backend-mode.ts reads the tenant-era public.tenant_settings, which the new schema does
+      // not have, so a plain env flag gates these instead. /sync/calendar below is untouched.
+      if (env.SYNC_ROUTES === "on") {
+        const r = await handleSyncRoute(request, env, path, method);
+        if (r) return json(cors, r.status, r.body);
+      }
+
       // POST /sync/calendar
       if (path === "/sync/calendar" && method === "POST") {
         const result = await service.reconcileCalendar(env);
@@ -1174,7 +1185,7 @@ function corsHeaders(allowOrigin: string): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Admin-Pin",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Admin-Pin, X-Actor-Id, X-Organization-Id",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };

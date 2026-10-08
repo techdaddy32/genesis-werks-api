@@ -1,3 +1,4 @@
+# row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 #==============================================================================
 # FHI Service Work Order System — Cloudflare Worker config
 #==============================================================================
@@ -224,6 +225,15 @@ APP_WO_URL_TEMPLATE = "https://genesis-sandbox.pages.dev/work-orders?id={id}"
 WO_SEQUENCE_SCOPE = "global"
 # TODO(craig): set after the first `wrangler deploy --env sandbox` (daily-report PDF links):
 # PUBLIC_WORKER_URL = "https://genesis-api-sandbox.<subdomain>.workers.dev"
+# --- W1 walk-tool sync routes (new schema work/migrations 001→090; src/sync/, src/org-context.ts).
+# SYNC_ROUTES mounts POST /sync/push · GET /sync/pull · PUT /sync/files/:id (backend-mode.ts keys on
+# the tenant-era tenant_settings table, which the new schema lacks — so an env flag gates them).
+# SYNC_AUTH_MODE "actor_header" = SANDBOX identity stub (X-Actor-Id / Bearer <shared.members.id>);
+# NEVER set it on a production Worker — the JWT mode replaces it (see org-context.ts header).
+# ORGANIZATION_ID = the fictitious Sandbox Organization (090 seed); still validated against membership.
+SYNC_ROUTES = "on"
+SYNC_AUTH_MODE = "actor_header"
+ORGANIZATION_ID = "019a0000-0000-7000-8000-000000000001"
 
 [[env.sandbox.hyperdrive]]
 binding = "HYPERDRIVE"
