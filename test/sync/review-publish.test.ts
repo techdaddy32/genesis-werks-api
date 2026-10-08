@@ -1,4 +1,5 @@
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07
+// row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — publish pin: unknown version 404 (was 422); client_rejected / superseded / foreign version 409
 // Check-in review + publish (walk spec L7, §5.2 structure_changes, §5.6 publish_revision, §6 check 3).
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { dbAvailable, ownerSql, createTestOrg, syncEnv, syncRequest, callSync, syncSet, ownerEvents, type Sql, type TestOrg } from "./_db";
@@ -98,7 +99,7 @@ describe.skipIf(!available)("review + publish", () => {
     const last = b.groups.flatMap((g) => g.changes)[0];
     expect((await call("PATCH", t.designerB, `/projects/${t.project}/review/${last.id}`, { outcome: "validated" })).status).toBe(200);
 
-    expect((await call("POST", t.designerB, `/projects/${t.project}/publish`, { drawing_version_id: crypto.randomUUID() })).status).toBe(422);
+    expect((await call("POST", t.designerB, `/projects/${t.project}/publish`, { drawing_version_id: crypto.randomUUID() })).status).toBe(404); // W4: unknown version
     const ok = await call("POST", t.designerB, `/projects/${t.project}/publish`, { drawing_version_id: t.version });
     expect(ok.status).toBe(200);
     const ss = (ok.body as { structure_state: Record<string, unknown> }).structure_state;
@@ -132,5 +133,27 @@ describe.skipIf(!available)("review + publish", () => {
     expect(stale?.change_kind).toBe("stale_capture");
     // and it blocks publish until reviewed
     expect((await call("POST", t.designerB, `/projects/${t.project}/publish`)).status).toBe(409);
+  });
+
+  it("W4 publish pin (spec §2b): a client_rejected or superseded version → 409; a version of a drawing not on this project → 409; the previous pin is kept when none is given", async () => {
+    const b = (await call("GET", t.designerB, `/projects/${t.project}/review`)).body as ReviewBody;
+    for (const c of b.groups.flatMap((g) => g.changes)) expect((await call("PATCH", t.designerB, `/projects/${t.project}/review/${c.id}`, { outcome: "validated" })).status).toBe(200);
+    await owner`update drawings.drawing_versions set status = 'client_rejected' where id = ${t.version}`;
+    const rej = await call("POST", t.designerB, `/projects/${t.project}/publish`, { drawing_version_id: t.version });
+    expect(rej.status).toBe(409);
+    expect((rej.body as { status: string }).status).toBe("client_rejected");
+    await owner`update drawings.drawing_versions set status = 'superseded' where id = ${t.version}`;
+    expect((await call("POST", t.designerB, `/projects/${t.project}/publish`, { drawing_version_id: t.version })).status).toBe(409);
+    const stray = crypto.randomUUID(), strayV = crypto.randomUUID();
+    await owner`insert into drawings.drawings (id, organization_id, kind, account_id, working_title, occurred_at, created_by) values (${stray}, ${t.org}, 'plan', ${t.account}, 'account-filed plan', now(), ${t.designer})`;
+    await owner`insert into drawings.drawing_versions (id, organization_id, drawing_id, version_no, occurred_at, created_by) values (${strayV}, ${t.org}, ${stray}, 1, now(), ${t.designer})`;
+    expect((await call("POST", t.designerB, `/projects/${t.project}/publish`, { drawing_version_id: strayV })).status).toBe(409);
+    expect((await state()).published_revision).toBe(1); // nothing published by the refusals
+    // no pin given → publish goes through and keeps the previously pinned version (even though it is now superseded: the pin is a fact of the earlier publish)
+    const ok = await call("POST", t.designerB, `/projects/${t.project}/publish`);
+    expect(ok.status).toBe(200);
+    const ss = (ok.body as { structure_state: Record<string, unknown> }).structure_state;
+    expect(ss.published_revision).toBe(2);
+    expect(ss.published_drawing_version_id).toBe(t.version);
   });
 });

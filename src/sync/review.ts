@@ -1,4 +1,5 @@
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07
+// row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — publish pin: 404 unknown version · 409 version of another project / client_rejected / superseded (spec §2b publish rule)
 //==============================================================================
 // sync/review.ts — check-in review + publish (walk spec L7, §5.2 structure_changes,
 // §5.5 action_items, §5.6 publish_revision; Gate A: the review list is MATERIALIZED).
@@ -20,7 +21,10 @@
 //           itself — this module does NOT emit a second one). Worker rules before the call:
 //           only the LIVE checkout holder may publish (no admin bypass — an admin overrides
 //           first, explicitly) and NO unreviewed structure_changes may remain for the
-//           working revision (409 with the pending count).
+//           working revision (409 with the pending count). W4 (spec §2b publish rule): a pinned
+//           drawing_version_id must exist (404), belong to a drawing of THIS project (409) and be in
+//           any status except client_rejected / superseded (409) — technicians load the pinned
+//           version; the status chip tells them whether it is client-approved.
 //==============================================================================
 
 import type { OrganizationContext, Tx } from "../org-context";
@@ -216,12 +220,25 @@ export async function publishProject(ctx: OrganizationContext, projectId: string
     if (pendingCount > 0) {
       return { status: 409, body: { error: "unreviewed structure changes remain for the working revision", pending_count: pendingCount, pending_room_hints: Number(pending[0].hints), working_revision: state.working_revision } };
     }
+    // W4: the publish pin rule (spec §2b) — checked here, in TypeScript, before the DB publish path.
+    const pin = dv != null ? (dv as string).toLowerCase() : null;
+    if (pin) {
+      const v = await tx<{ id: string; status: string; project_id: string | null; kind: string; deleted_at: Date | null }[]>`
+        select v.id, v.status, d.project_id, d.kind, v.deleted_at from drawings.drawing_versions v
+          join drawings.drawings d on d.id = v.drawing_id and d.organization_id = v.organization_id
+         where v.id = ${pin} and v.organization_id = ${ctx.organizationId}`;
+      if (!v[0] || v[0].deleted_at) return { status: 404, body: { error: "drawing_version_id not found in this organization" } };
+      if (v[0].project_id !== pid) return { status: 409, body: { error: "drawing_version_id belongs to a drawing that is not attached to this project", drawing_project_id: v[0].project_id } };
+      if (v[0].status === "client_rejected" || v[0].status === "superseded") {
+        return { status: 409, body: { error: `a ${v[0].status} version cannot be pinned as the published drawing version`, status: v[0].status } };
+      }
+    }
     let published: StructureStateRow;
     try {
       // savepoint: a refused publish (bad drawing version) must not abort the surrounding transaction
       published = await tx.savepoint(async (sp) => {
         const rows = await sp<StructureStateRow[]>`
-          select * from places.publish_revision(${pid}, ${ctx.actorId}, ${(dv as string | undefined)?.toLowerCase() ?? null})`;
+          select * from places.publish_revision(${pid}, ${ctx.actorId}, ${pin})`;
         return rows[0];
       });
     } catch (e) {

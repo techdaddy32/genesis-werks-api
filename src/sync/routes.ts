@@ -1,6 +1,7 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — checkout / review / publish / attach / files routes
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — layer CRUD routes (GET/POST /drawings/:id/layers · PATCH/DELETE /drawings/:id/layers/:layerId)
+// row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — drawings attach/detach/move/copy · PATCH /annotations/:id (R-move) · version lifecycle (list / transition / compare)
 //==============================================================================
 // sync/routes.ts — HTTP glue for the walk-tool routes (new schema, 001→090).
 //
@@ -24,6 +25,16 @@
 //   POST   /drawings/:id/layers               {name, class, write_policy, export?, ordinal?, color_hint?} → 201 · 400 · 403 technician
 //   PATCH  /drawings/:id/layers/:layerId      {name?, ordinal?, export?, color_hint?, locked?} → 200 · 400 class/write_policy · 403 (designer: export/locked)
 //   DELETE /drawings/:id/layers/:layerId      tombstone (office/admin) → 200 · 403 · 409 referenced by live annotations
+//   W4 (sync/drawings.ts · sync/versions.ts · review.ts publish pin)
+//   POST   /drawings/:id/attach               {project_id | account_id} (office/admin) → 200 {resolved_rooms, room_hint_pending, annotation_proposals} · 400 not exactly one · 409 attached elsewhere
+//   POST   /drawings/:id/detach               (office/admin) → 200 {withdrawn_changes, rows_rewritten} (in place; zero deletes)
+//   POST   /drawings/:id/move                 {project_id | account_id} = detach + attach, one transaction → 200
+//   POST   /drawings/:id/copy                 {title?} (designer/office/admin) → 201 {drawing, counts, layers/versions/pages id maps}
+//   PATCH  /annotations/:id                   {layer_id} same class → 200 moved · onto structure = promotion (live checkout) → 201 {annotation, source} · 403 / 409
+//   GET    /drawings/:id/versions             → 200 {drawing_id, versions[{…, latest_transition}]} · 409 whiteboard
+//   POST   /drawing-versions/:id/transition   {to, note?, client_name?, client_at?} → 200 {from, to, version, transition, superseded[]} · 400 · 403 role · 409 edge / whiteboard
+//   GET    /drawing-versions/:a/compare/:b    → 200 {a, b, pages[], changes[], summary} · 409 different drawings / whiteboard
+//   POST   /projects/:id/publish              (W2) now also: 404 unknown drawing_version_id · 409 version of another project / client_rejected / superseded
 //
 // Mounted by src/index.ts ONLY when env.SYNC_ROUTES === "on" (the sandbox deployment), AFTER
 // the tenant-era /projects/:pid/(membership|forum-categories|action-items|forums) routes, which
@@ -42,6 +53,8 @@ import { takeCheckout, renewCheckout, releaseCheckout, overrideCheckout } from "
 import { getReview, patchReview, publishProject } from "./review";
 import { attachWalk } from "./attach";
 import { listLayers, createLayer, patchLayer, tombstoneLayer } from "./layers";
+import { attachDrawing, detachDrawing, moveDrawing, copyDrawing, moveAnnotation } from "./drawings";
+import { listVersions, transitionVersion, compareVersions } from "./versions";
 
 export interface SyncResponse {
   status: number;
@@ -59,13 +72,20 @@ const RE_PUBLISH = /^\/projects\/([^/]+)\/publish$/;
 const RE_WALK_ATTACH = /^\/walks\/([^/]+)\/attach$/;
 const RE_FILE_UPLOADED = /^\/files\/([^/]+)\/uploaded$/;
 const RE_LAYERS = /^\/drawings\/([^/]+)\/layers(?:\/([^/]+))?$/;
+const RE_DRAWING_ACT = /^\/drawings\/([^/]+)\/(attach|detach|move|copy)$/;
+const RE_DRAWING_VERSIONS = /^\/drawings\/([^/]+)\/versions$/;
+const RE_ANNOTATION = /^\/annotations\/([^/]+)$/;
+const RE_VERSION_TRANSITION = /^\/drawing-versions\/([^/]+)\/transition$/;
+const RE_VERSION_COMPARE = /^\/drawing-versions\/([^/]+)\/compare\/([^/]+)$/;
 
 /** True for the paths this module owns (never /sync/calendar, never the tenant-era /projects routes). */
 export function isSyncPath(path: string): boolean {
   return (
     path === "/sync/push" || path === "/sync/pull" || path.startsWith("/sync/files/") ||
     RE_CHECKOUT.test(path) || RE_REVIEW.test(path) || RE_PUBLISH.test(path) || RE_WALK_ATTACH.test(path) ||
-    path === "/files" || RE_FILE_UPLOADED.test(path) || RE_LAYERS.test(path)
+    path === "/files" || RE_FILE_UPLOADED.test(path) || RE_LAYERS.test(path) ||
+    RE_DRAWING_ACT.test(path) || RE_DRAWING_VERSIONS.test(path) || RE_ANNOTATION.test(path) ||
+    RE_VERSION_TRANSITION.test(path) || RE_VERSION_COMPARE.test(path)
   );
 }
 
@@ -197,6 +217,48 @@ export async function handleSyncRoute(request: Request, env: Env, path: string, 
       if (e instanceof PushBodyError) return { status: 400, body: { error: e.message } };
       throw e;
     }
+  }
+
+  // --- W4 -----------------------------------------------------------------------------
+  if ((m = RE_DRAWING_ACT.exec(path))) {
+    if (method !== "POST") return notAllowed;
+    const drawingId = m[1];
+    const act = m[2];
+    const body = await readJsonOrEmpty(request);
+    if (act === "attach") return attachDrawing(ctx, drawingId, body);
+    if (act === "detach") return detachDrawing(ctx, drawingId);
+    if (act === "move") return moveDrawing(ctx, drawingId, body);
+    return copyDrawing(ctx, drawingId, body);
+  }
+
+  if ((m = RE_DRAWING_VERSIONS.exec(path))) {
+    if (method !== "GET") return notAllowed;
+    return listVersions(ctx, m[1]);
+  }
+
+  if ((m = RE_ANNOTATION.exec(path))) {
+    if (method !== "PATCH") return notAllowed;
+    try {
+      return await moveAnnotation(ctx, m[1], await readJson(request));
+    } catch (e) {
+      if (e instanceof PushBodyError) return { status: 400, body: { error: e.message } };
+      throw e;
+    }
+  }
+
+  if ((m = RE_VERSION_TRANSITION.exec(path))) {
+    if (method !== "POST") return notAllowed;
+    try {
+      return await transitionVersion(ctx, m[1], await readJson(request));
+    } catch (e) {
+      if (e instanceof PushBodyError) return { status: 400, body: { error: e.message } };
+      throw e;
+    }
+  }
+
+  if ((m = RE_VERSION_COMPARE.exec(path))) {
+    if (method !== "GET") return notAllowed;
+    return compareVersions(ctx, m[1], m[2]);
   }
 
   return null;

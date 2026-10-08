@@ -1,5 +1,6 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — rule-hook contract widened (rowClass / redirect fields / extra); hooks registered by sync/layers.ts
+// row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — 055 columns: copied_from_id (annotations / room_polygons / location_placements), location_notes answered_at/by + kinds question/task, location_media internal / archived_at
 //==============================================================================
 // sync/tables.ts — the /sync/push allow-list: which tables a device may push,
 // which columns it may write, which columns are FK parents (unknown_parent
@@ -9,7 +10,7 @@
 // Every table here carries the uniform sync set (walk spec §5.1 / 001 §5):
 //   organization_id, revision, occurred_at, received_at, device_id, created_by,
 //   walk_id, captured_revision, deleted_at, deleted_by
-// Source of truth for the column lists: work/migrations 002/030/035/036/040
+// Source of truth for the column lists: work/migrations 002/030/035/036/040/055
 // (test/sync/registry.test.ts asserts every column here exists in the live schema).
 //
 // PER-TABLE RULE HOOK (`rules`): W1 left it EMPTY for every table. Row W3 (sync/layers.ts)
@@ -176,14 +177,16 @@ export const TABLE_SPECS: Record<SyncTable, TableSpec> = {
     eventType: (row) => (row.capture_kind === "as_walked" ? "placement.as_walked" : "structure.changed"),
   },
   "places.location_notes": {
-    columns: ["account_id", "project_id", "room_id", "room_hint", "location_id", "location_hint", "kind", "phase", "note_layer", "body", "custom"],
+    // W4 (055): kind also allows question | task; answered_at / answered_by close them (device-writable: the answer happens in the field too)
+    columns: ["account_id", "project_id", "room_id", "room_hint", "location_id", "location_hint", "kind", "phase", "note_layer", "body", "answered_at", "answered_by", "custom"],
     project: "column",
     room: "room_id",
     classify: capture,
     eventType: (row) => (row.kind === "flag" ? "capture.flagged" : "capture.synced"),
   },
   "places.location_media": {
-    columns: ["account_id", "project_id", "room_id", "room_hint", "location_id", "location_hint", "file_id", "phase", "caption", "custom"],
+    // W4 (055): internal (never leaves the Organization view) + archived_at (soft-hide, not a tombstone)
+    columns: ["account_id", "project_id", "room_id", "room_hint", "location_id", "location_hint", "file_id", "phase", "caption", "internal", "archived_at", "custom"],
     project: "column",
     room: "room_id",
     classify: capture,
@@ -200,7 +203,8 @@ export const TABLE_SPECS: Record<SyncTable, TableSpec> = {
     eventType: () => "structure.changed",
   },
   "places.room_polygons": {
-    columns: ["account_id", "project_id", "drawing_id", "drawing_version_id", "page_id", "room_id", "room_hint", "polygon", "metadata"],
+    // W4 (055): copied_from_id = lineage (carry-forward / drawing copy); the compare keys rooms by room_id
+    columns: ["account_id", "project_id", "drawing_id", "drawing_version_id", "page_id", "room_id", "room_hint", "polygon", "metadata", "copied_from_id"],
     project: "column",
     room: "room_id",
     classify: structure,
@@ -209,7 +213,7 @@ export const TABLE_SPECS: Record<SyncTable, TableSpec> = {
   "places.location_placements": {
     columns: [
       "account_id", "project_id", "drawing_id", "drawing_version_id", "page_id", "location_id", "location_hint",
-      "room_id", "room_hint", "x", "y", "rotation", "symbol_key", "label_text", "metadata",
+      "room_id", "room_hint", "x", "y", "rotation", "symbol_key", "label_text", "metadata", "copied_from_id",
     ],
     project: "column",
     room: "room_id",
@@ -242,7 +246,8 @@ export const TABLE_SPECS: Record<SyncTable, TableSpec> = {
   "drawings.annotations": {
     // redirected_from_layer_id / moved_to_id are server-only (W3 / W4). class: COPIED from the landing layer by the
     // annotations hook (sync/layers.ts), stamped once; an UPDATE that changes it is 'immutable_class'.
-    columns: ["page_id", "layer_id", "kind", "class", "geometry", "style", "label", "z", "room_id", "room_hint", "location_id", "file_id", "callout_no", "checked", "custom"],
+    // W4 (055): copied_from_id = lineage; kind also allows bracket | polygon. moved_to_id stays server-only (PATCH /annotations/:id promotion).
+    columns: ["page_id", "layer_id", "kind", "class", "geometry", "style", "label", "z", "room_id", "room_hint", "location_id", "file_id", "callout_no", "checked", "copied_from_id", "custom"],
     project: "via_page",
     room: "room_id",
     // Fallback only (the hook's rowClass wins): the STORED class on an existing row, else capture.
