@@ -1,4 +1,5 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
+// row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — rule-hook contract widened (rowClass / redirect fields / extra); hooks registered by sync/layers.ts
 //==============================================================================
 // sync/tables.ts — the /sync/push allow-list: which tables a device may push,
 // which columns it may write, which columns are FK parents (unknown_parent
@@ -11,10 +12,13 @@
 // Source of truth for the column lists: work/migrations 002/030/035/036/040
 // (test/sync/registry.test.ts asserts every column here exists in the live schema).
 //
-// PER-TABLE RULE HOOK (`rules`): W1 leaves it EMPTY for every table. Row W3 plugs the
-// layer-governance hook in for drawings.annotations (redirect-never-reject,
-// class stamp). The hook may ONLY redirect / amend the row or return one of the
-// reasons in REJECTION_REASONS — there is no layer-based rejection reason anywhere.
+// PER-TABLE RULE HOOK (`rules`): W1 left it EMPTY for every table. Row W3 (sync/layers.ts)
+// registers the layer-governance hooks for drawings.annotations (redirect-never-reject,
+// class stamp, immutable_class) and drawings.layers (template validation). A hook runs
+// AFTER parent-exists and BEFORE the generic class rules, so it may decide the row's class
+// (annotations: copied from the landing layer). The hook may ONLY redirect / amend the row
+// or return one of the reasons in REJECTION_REASONS — there is no layer-based rejection
+// reason anywhere.
 //==============================================================================
 
 import type { Tx } from "../org-context";
@@ -96,6 +100,7 @@ export type JsonRow = Record<string, unknown>;
 export interface RuleHookInput {
   tx: Tx;
   table: SyncTable;
+  /** The device's allow-listed columns (new or changed). */
   row: JsonRow;
   existing: JsonRow | null;
   actorId: string;
@@ -104,9 +109,21 @@ export interface RuleHookInput {
   projectId: string | null;
 }
 export type RuleHookResult =
-  | { kind: "ok"; row: JsonRow; redirected?: boolean }
+  | {
+      kind: "ok";
+      row: JsonRow;
+      /** Server-owned columns to write alongside the row (e.g. redirected_from_layer_id). */
+      extra?: JsonRow;
+      /** The class the generic rules + events + structure_changes use (annotations: the landing layer's). */
+      rowClass?: RowClass;
+      /** Drawing the row belongs to (for structure_changes.drawing_id when the row has no drawing_id column). */
+      drawingId?: string | null;
+      redirected?: boolean;
+      redirectedTo?: string;
+      redirectReason?: "locked" | "policy";
+    }
   | { kind: "reject"; reason: RejectionReason; detail?: string };
-/** Per-table rule hook (W3 adds the annotations/layer hook here). Runs after the generic rules, before the upsert. */
+/** Per-table rule hook (W3: sync/layers.ts). Runs after parent-exists, BEFORE the generic class rules and the upsert. */
 export type RuleHook = (input: RuleHookInput) => Promise<RuleHookResult>;
 
 export interface TableSpec {
@@ -223,11 +240,13 @@ export const TABLE_SPECS: Record<SyncTable, TableSpec> = {
     eventType: () => "structure.changed",
   },
   "drawings.annotations": {
-    // redirected_from_layer_id / moved_to_id are server-only (W3). class: device value, else copied from the layer (see push.ts).
+    // redirected_from_layer_id / moved_to_id are server-only (W3 / W4). class: COPIED from the landing layer by the
+    // annotations hook (sync/layers.ts), stamped once; an UPDATE that changes it is 'immutable_class'.
     columns: ["page_id", "layer_id", "kind", "class", "geometry", "style", "label", "z", "room_id", "room_hint", "location_id", "file_id", "callout_no", "checked", "custom"],
     project: "via_page",
     room: "room_id",
-    classify: capture, // W1: annotations are CAPTURE; the layer rule hook (class from layer, redirect) lands in W3 via `rules`
+    // Fallback only (the hook's rowClass wins): the STORED class on an existing row, else capture.
+    classify: (row) => (row.class === "structure" ? "structure" : "capture"),
     eventType: () => "annotation.synced",
   },
   "shared.files": {
@@ -240,7 +259,7 @@ export const TABLE_SPECS: Record<SyncTable, TableSpec> = {
   },
 };
 
-/** Register (or replace) the per-table rule hook — W3 calls this for drawings.annotations. */
+/** Register (or replace) the per-table rule hook — sync/layers.ts (W3) calls this for drawings.annotations and drawings.layers. */
 export function setTableRuleHook(table: SyncTable, hook: RuleHook | undefined): void {
   TABLE_SPECS[table].rules = hook;
 }

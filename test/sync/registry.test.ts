@@ -1,4 +1,5 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
+// row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — the seam now carries exactly the two layer-governance hooks
 // The allow-list in src/sync/tables.ts must describe the APPLIED schema (001→090), and the
 // rejection-reason / change-kind vocabularies must be exactly the 036 CHECK lists.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -57,7 +58,12 @@ describe.skipIf(!available)("sync registry matches the applied schema", () => {
     }
   });
 
-  it("no rule hook is registered in W1 (the per-table seam is empty)", () => {
-    for (const table of SYNC_TABLES) expect(TABLE_SPECS[table].rules, table).toBeUndefined();
+  it("W3: exactly drawings.annotations and drawings.layers carry a rule hook; every other table's seam stays empty", async () => {
+    const { annotationRuleHook, layerRuleHook } = await import("../../src/sync/layers");
+    for (const table of SYNC_TABLES) {
+      if (table === "drawings.annotations") expect(TABLE_SPECS[table].rules).toBe(annotationRuleHook);
+      else if (table === "drawings.layers") expect(TABLE_SPECS[table].rules).toBe(layerRuleHook);
+      else expect(TABLE_SPECS[table].rules, table).toBeUndefined();
+    }
   });
 });

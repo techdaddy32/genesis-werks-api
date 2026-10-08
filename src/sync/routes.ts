@@ -1,5 +1,6 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — checkout / review / publish / attach / files routes
+// row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — layer CRUD routes (GET/POST /drawings/:id/layers · PATCH/DELETE /drawings/:id/layers/:layerId)
 //==============================================================================
 // sync/routes.ts — HTTP glue for the walk-tool routes (new schema, 001→090).
 //
@@ -18,6 +19,11 @@
 //   POST  /walks/:id/attach                   {project_id} → 200 {resolved_rooms, room_hint_pending} · 409 other project
 //   POST  /files                              {filename, kind?, …} → 201 {file_id, storage_key, put_url}
 //   POST  /files/:id/uploaded                 {sha256, byte_size?} → 200
+//   W3 (sync/layers.ts)
+//   GET    /drawings/:id/layers               → 200 {drawing_id, layers[]} (render order)
+//   POST   /drawings/:id/layers               {name, class, write_policy, export?, ordinal?, color_hint?} → 201 · 400 · 403 technician
+//   PATCH  /drawings/:id/layers/:layerId      {name?, ordinal?, export?, color_hint?, locked?} → 200 · 400 class/write_policy · 403 (designer: export/locked)
+//   DELETE /drawings/:id/layers/:layerId      tombstone (office/admin) → 200 · 403 · 409 referenced by live annotations
 //
 // Mounted by src/index.ts ONLY when env.SYNC_ROUTES === "on" (the sandbox deployment), AFTER
 // the tenant-era /projects/:pid/(membership|forum-categories|action-items|forums) routes, which
@@ -35,6 +41,7 @@ import { putUrlFor, receiveFileBytes, createFile, markUploaded } from "./files";
 import { takeCheckout, renewCheckout, releaseCheckout, overrideCheckout } from "./checkout";
 import { getReview, patchReview, publishProject } from "./review";
 import { attachWalk } from "./attach";
+import { listLayers, createLayer, patchLayer, tombstoneLayer } from "./layers";
 
 export interface SyncResponse {
   status: number;
@@ -51,13 +58,14 @@ const RE_REVIEW = /^\/projects\/([^/]+)\/review(?:\/([^/]+))?$/;
 const RE_PUBLISH = /^\/projects\/([^/]+)\/publish$/;
 const RE_WALK_ATTACH = /^\/walks\/([^/]+)\/attach$/;
 const RE_FILE_UPLOADED = /^\/files\/([^/]+)\/uploaded$/;
+const RE_LAYERS = /^\/drawings\/([^/]+)\/layers(?:\/([^/]+))?$/;
 
 /** True for the paths this module owns (never /sync/calendar, never the tenant-era /projects routes). */
 export function isSyncPath(path: string): boolean {
   return (
     path === "/sync/push" || path === "/sync/pull" || path.startsWith("/sync/files/") ||
     RE_CHECKOUT.test(path) || RE_REVIEW.test(path) || RE_PUBLISH.test(path) || RE_WALK_ATTACH.test(path) ||
-    path === "/files" || RE_FILE_UPLOADED.test(path)
+    path === "/files" || RE_FILE_UPLOADED.test(path) || RE_LAYERS.test(path)
   );
 }
 
@@ -166,6 +174,25 @@ export async function handleSyncRoute(request: Request, env: Env, path: string, 
     if (method !== "POST") return notAllowed;
     try {
       return await markUploaded(ctx, m[1], await readJson(request));
+    } catch (e) {
+      if (e instanceof PushBodyError) return { status: 400, body: { error: e.message } };
+      throw e;
+    }
+  }
+
+  // --- W3 -----------------------------------------------------------------------------
+  if ((m = RE_LAYERS.exec(path))) {
+    const drawingId = m[1];
+    const layerId = m[2];
+    try {
+      if (!layerId) {
+        if (method === "GET") return await listLayers(ctx, drawingId);
+        if (method === "POST") return await createLayer(ctx, drawingId, await readJson(request) as Record<string, unknown>);
+        return notAllowed;
+      }
+      if (method === "PATCH") return await patchLayer(ctx, drawingId, layerId, await readJson(request) as Record<string, unknown>);
+      if (method === "DELETE") return await tombstoneLayer(ctx, drawingId, layerId);
+      return notAllowed;
     } catch (e) {
       if (e instanceof PushBodyError) return { status: 400, body: { error: e.message } };
       throw e;

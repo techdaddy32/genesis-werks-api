@@ -1,4 +1,5 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
+// row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — annotations carry layer_ordinal and are returned in render order (layer ordinal, z, received_at)
 //==============================================================================
 // sync/pull.ts — GET /sync/pull?project_id=<uuid>&since=<ISO timestamptz>
 //
@@ -27,6 +28,12 @@
 // returned to every member of the Organization (spec §5.3 R-capture).
 //
 // Draft walks (project_id NULL) are not project-scoped and pull nothing here.
+//
+// W3 render order (spec §5.5): layers come with ordinal / locked / export / class / write_policy
+// (every column); annotations come with z, layer_id, redirected_from_layer_id AND a joined
+// `layer_ordinal`, and the page returned is sorted (layer ordinal, z, received_at). The DB query
+// still fetches by received_at so the cursor / truncation stay correct; the sort is applied to
+// the fetched page.
 //==============================================================================
 
 import type { OrganizationContext, Tx } from "../org-context";
@@ -144,12 +151,13 @@ export async function pullProject(ctx: OrganizationContext, q: PullQuery): Promi
       "places.location_notes": await byProject("places.location_notes"),
       "places.location_media": await byProject("places.location_media"),
       "places.device_placements": await byProject("places.device_placements", (s) => s`and t.capture_kind = 'as_walked'`),
-      "drawings.annotations": track("drawings.annotations", await tx<JsonRow[]>`
-        select a.*, ${cursorSql(tx, "a")} from drawings.annotations a
+      "drawings.annotations": renderOrder(track("drawings.annotations", await tx<JsonRow[]>`
+        select a.*, l.ordinal as layer_ordinal, ${cursorSql(tx, "a")} from drawings.annotations a
           join drawings.pages p on p.id = a.page_id
           join drawings.drawings d on d.id = p.drawing_id
+          join drawings.layers l on l.id = a.layer_id
          where a.organization_id = ${org} and d.organization_id = ${org} and d.project_id = ${q.project_id} ${sinceSql(tx, "a")}
-         order by a.received_at, a.id limit ${PAGE + 1}`),
+         order by a.received_at, a.id limit ${PAGE + 1}`)),
       "shared.files": await byProject("shared.files"),
     };
 
@@ -173,6 +181,16 @@ export async function pullProject(ctx: OrganizationContext, q: PullQuery): Promi
       truncated,
     };
   });
+}
+
+/** W3: render order = layer ordinal, then z within the layer, ties by received_at (spec §5.5). */
+export function renderOrder(rows: JsonRow[]): JsonRow[] {
+  const ts = (v: unknown) => (v instanceof Date ? v.getTime() : typeof v === "string" ? Date.parse(v) : 0);
+  return rows.sort((a, b) =>
+    Number(a.layer_ordinal) - Number(b.layer_ordinal) ||
+    Number(a.z) - Number(b.z) ||
+    ts(a.received_at) - ts(b.received_at) ||
+    String(a.id).localeCompare(String(b.id)));
 }
 
 /** Normalise a caller's ISO string to the cursor's text form (UTC, 6 fractional digits) for comparison. */

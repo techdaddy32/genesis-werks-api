@@ -1,5 +1,6 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — designerB (non-admin designer), MemorySink head/get/list, ownerEvents
+// row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — layer_templates (spec §5.3 FHI-shaped seed, fictitious org) + template_id on the three base layers
 //==============================================================================
 // test/sync/_db.ts — helpers for the walk-tool sync suite (NOT a test file).
 //
@@ -113,6 +114,8 @@ export interface TestOrg {
   layerDesign: string; // structure
   layerFieldNotes: string; // capture
   layerBoard: string;
+  /** W3: the Organization's layer_templates (spec §5.3 shape); Design / Field Notes / Board layers above carry their template_id. */
+  templates: { design: string; fieldNotes: string; roughIn: string; trim: string; service: string; scratch: string; board: string };
   rooms: { foyer: string; kitchen: string };
   locationTv: string;
 }
@@ -126,6 +129,7 @@ export async function createTestOrg(owner: Sql, label = "sync-test"): Promise<Te
     org: uuid(), designer: uuid(), designerB: uuid(), techA: uuid(), techB: uuid(), office: uuid(), revoked: uuid(),
     account: uuid(), project: uuid(), drawing: uuid(), whiteboard: uuid(), version: uuid(),
     page1: uuid(), page2: uuid(), boardPage: uuid(), layerDesign: uuid(), layerFieldNotes: uuid(), layerBoard: uuid(),
+    templates: { design: uuid(), fieldNotes: uuid(), roughIn: uuid(), trim: uuid(), service: uuid(), scratch: uuid(), board: uuid() },
     rooms: { foyer: uuid(), kitchen: uuid() }, locationTv: uuid(),
   };
   const slug = `${label}-${t.org.slice(0, 8)}`;
@@ -151,10 +155,19 @@ export async function createTestOrg(owner: Sql, label = "sync-test"): Promise<Te
       (${t.page1},     ${t.org}, ${t.drawing},    ${t.version}, 1, 'Floor 1', 1, ${T0}, ${t.designer}),
       (${t.page2},     ${t.org}, ${t.drawing},    ${t.version}, 2, 'Floor 2', 2, ${T0}, ${t.designer}),
       (${t.boardPage}, ${t.org}, ${t.whiteboard}, null,         1, 'Board 1', null, ${T0}, ${t.designer})`;
-    await tx`insert into drawings.layers (id, organization_id, drawing_id, name, ordinal, class, write_policy, export, occurred_at, created_by) values
-      (${t.layerDesign},     ${t.org}, ${t.drawing},    'Design',      1, 'structure', 'designer_checkout', true, ${T0}, ${t.designer}),
-      (${t.layerFieldNotes}, ${t.org}, ${t.drawing},    'Field Notes', 2, 'capture',   'any_member',        true, ${T0}, ${t.designer}),
-      (${t.layerBoard},      ${t.org}, ${t.whiteboard}, 'Board',       1, 'capture',   'any_member',        true, ${T0}, ${t.designer})`;
+    const tp = t.templates;
+    await tx`insert into drawings.layer_templates (id, organization_id, key, name, ordinal, class, write_policy, default_for_role, export, drawing_kind, created_by) values
+      (${tp.design},     ${t.org}, 'design',      'Design',      1, 'structure', 'designer_checkout', null,         true,  'plan',       ${t.designer}),
+      (${tp.fieldNotes}, ${t.org}, 'field_notes', 'Field Notes', 2, 'capture',   'any_member',        'technician', true,  'plan',       ${t.designer}),
+      (${tp.roughIn},    ${t.org}, 'rough_in',    'Rough-In',    3, 'capture',   'any_member',        null,         true,  'plan',       ${t.designer}),
+      (${tp.trim},       ${t.org}, 'trim',        'Trim',        4, 'capture',   'any_member',        null,         true,  'plan',       ${t.designer}),
+      (${tp.service},    ${t.org}, 'service',     'Service',     5, 'capture',   'any_member',        null,         true,  'plan',       ${t.designer}),
+      (${tp.scratch},    ${t.org}, 'scratch',     'Scratch',     6, 'capture',   'any_member',        null,         false, 'plan',       ${t.designer}),
+      (${tp.board},      ${t.org}, 'board',       'Board',       1, 'capture',   'any_member',        null,         true,  'whiteboard', ${t.designer})`;
+    await tx`insert into drawings.layers (id, organization_id, drawing_id, template_id, name, ordinal, class, write_policy, export, occurred_at, created_by) values
+      (${t.layerDesign},     ${t.org}, ${t.drawing},    ${tp.design},     'Design',      1, 'structure', 'designer_checkout', true, ${T0}, ${t.designer}),
+      (${t.layerFieldNotes}, ${t.org}, ${t.drawing},    ${tp.fieldNotes}, 'Field Notes', 2, 'capture',   'any_member',        true, ${T0}, ${t.designer}),
+      (${t.layerBoard},      ${t.org}, ${t.whiteboard}, ${tp.board},      'Board',       1, 'capture',   'any_member',        true, ${T0}, ${t.designer})`;
     await tx`insert into places.rooms (id, organization_id, account_id, project_id, name, room_type, level, sort_order, occurred_at, created_by) values
       (${t.rooms.foyer},   ${t.org}, ${t.account}, ${t.project}, 'Foyer',   'entry',   '1', 1, ${T0}, ${t.designer}),
       (${t.rooms.kitchen}, ${t.org}, ${t.account}, ${t.project}, 'Kitchen', 'kitchen', '1', 2, ${T0}, ${t.designer})`;

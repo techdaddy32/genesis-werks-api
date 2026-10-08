@@ -1,5 +1,6 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — rules engine wired after the event; walks.project_id immutable via push (attach route only)
+// row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — per-table hook moved BEFORE the class rules (annotations: class from the landing layer, redirect fields in the response); structure annotations → structure_changes('annotation'); template layers minted for drawings created in the batch (`created_layers`)
 //==============================================================================
 // sync/push.ts — POST /sync/push: per-row idempotent upsert (walk spec §5.6–5.7).
 //
@@ -10,8 +11,8 @@
 //   shape check (sync set present, organization_id = ctx org, created_by = actor for
 //   new rows, occurred_at) → parent-exists (every FK column → unknown_parent) → draft-
 //   walk rule (walk.project_id NULL ⇒ room_id/location_id/project_id NULL, hints only)
-//   → class (structure | capture) → RULES (below) → per-table hook (W3's seam, empty
-//   in W1) → UPSERT
+//   → per-table hook (sync/layers.ts: annotations redirect + class stamp; layers template
+//   validation) → class (structure | capture; the hook's rowClass wins) → RULES (below) → UPSERT
 //        INSERT … ON CONFLICT (id) DO UPDATE SET … , received_at = now()
 //          WHERE EXCLUDED.revision > t.revision
 //            AND (t.deleted_at IS NULL OR EXCLUDED.deleted_at IS NOT NULL)   -- tombstone-resurrection guard
@@ -39,15 +40,22 @@
 // An org mismatch cannot be its own reason (not in the CHECK) → stored as 'schema' with
 // detail 'org_mismatch'.
 //
-// Annotations are CAPTURE rows in W1. class: the device's value, else copied from the
-// landing layer; on update the stored class is kept (never recomputed). Redirect / stamp /
-// immutable_class logic is W3's and plugs in through TABLE_SPECS[...].rules.
+// Annotations (W3, sync/layers.ts): class is COPIED from the layer the row finally lands on
+// and stamped once; a layer that is locked / not writable REDIRECTS the row to the actor's
+// role-default layer (accepted, `redirected_to_layer_id` + `redirect_reason` in the response,
+// redirected_from_layer_id on the row) — never a rejection. An UPDATE that would change class
+// is 'immutable_class'. Structure-class annotations (checkout holder on a structure layer)
+// write structure_changes(change_kind='annotation'); captures never do.
+// Template instantiation: after the rows, every drawings.drawings row CREATED in this batch
+// gets the Organization's layer_templates for its kind that the device did not pre-mint
+// (server-minted, same transaction) → `created_layers` in the response.
 //==============================================================================
 
 import type { OrganizationContext, Tx } from "../org-context";
 import { withOrg } from "../org-context";
 import { isUuid } from "../db";
 import { evaluateRules } from "../rules";
+import { ensureTemplateLayers, type CreatedLayer } from "./layers"; // importing registers the W3 hooks on TABLE_SPECS
 import {
   TABLE_SPECS,
   PARENT_TARGETS,
@@ -87,8 +95,12 @@ export interface AcceptedRow {
   revision: number;
   /** created | updated | tombstoned | noop (idempotent replay of an already-stored revision). */
   op: RowOp;
-  /** Set by a per-table hook when it redirected the row (W3). Never set in W1. */
+  /** Set by the annotations hook when it redirected the row (W3). */
   redirected?: boolean;
+  /** The layer the row actually landed on (redirects only). */
+  redirected_to_layer_id?: string;
+  /** Why: the requested layer was locked, or its write_policy was not met. */
+  redirect_reason?: "locked" | "policy";
 }
 export interface RejectedRow {
   table: string;
@@ -106,6 +118,8 @@ export interface PushResult {
   accepted: AcceptedRow[];
   rejected: RejectedRow[];
   files: FileResult[];
+  /** Template layers the server minted for drawings created in this batch (W3). */
+  created_layers: CreatedLayer[];
 }
 
 export class PushBodyError extends Error {
@@ -154,11 +168,17 @@ export function parsePushBody(input: unknown): PushBody {
 /** Push one batch for the resolved Organization context. ONE transaction. */
 export async function pushBatch(ctx: OrganizationContext, body: PushBody, opts: PushOptions): Promise<PushResult> {
   return withOrg(ctx, async (tx) => {
-    const result: PushResult = { accepted: [], rejected: [], files: [] };
+    const result: PushResult = { accepted: [], rejected: [], files: [], created_layers: [] };
     for (const entry of body.rows) {
       const outcome = await pushOneRow(tx, ctx, body, entry);
       if (outcome.kind === "accepted") result.accepted.push(outcome.row);
       else result.rejected.push(outcome.row);
+    }
+    // W3: a drawing never exists without its template layers — mint what the device did not pre-mint.
+    for (const a of result.accepted) {
+      if (a.table === "drawings.drawings" && a.op === "created") {
+        result.created_layers.push(...(await ensureTemplateLayers(tx, ctx, a.id, body.device_id)));
+      }
     }
     result.files = await answerFiles(tx, ctx, body.files ?? [], opts.putUrlFor);
     return result;
@@ -293,12 +313,34 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
     }
   }
 
-  // --- project (the spine) + class ----------------------------------------------------
+  // --- project (the spine) --------------------------------------------------------------
   const merged: JsonRow = { ...(existing ?? {}), ...row };
   const projectId = await resolveProjectId(sp, table, merged, ctx.organizationId);
-  const rowClass: RowClass = spec.classify(merged);
   const tombstoning = row.deleted_at != null && (!existing || existing.deleted_at == null);
   const state = projectId ? await readStructureState(sp, projectId, ctx.organizationId) : null;
+
+  // --- per-table hook (W3: sync/layers.ts) — may redirect / amend the row and decide its class -----
+  let finalRow = row;
+  let hookExtra: JsonRow = {};
+  let hookClass: RowClass | undefined;
+  let hookDrawingId: string | null | undefined;
+  let redirected = false;
+  let redirectedTo: string | undefined;
+  let redirectReason: "locked" | "policy" | undefined;
+  if (spec.rules) {
+    const hooked = await spec.rules({ tx: sp, table, row, existing, actorId: ctx.actorId, role: ctx.role, isAdmin: ctx.isAdmin, projectId });
+    if (hooked.kind === "reject") return { kind: "rejected", reason: hooked.reason, detail: hooked.detail, projectId, walkId: walkRef(row, verified) };
+    finalRow = hooked.row;
+    hookExtra = hooked.extra ?? {};
+    hookClass = hooked.rowClass;
+    hookDrawingId = hooked.drawingId;
+    redirected = !!hooked.redirected;
+    redirectedTo = hooked.redirectedTo;
+    redirectReason = hooked.redirectReason;
+  }
+
+  // --- class ---------------------------------------------------------------------------
+  const rowClass: RowClass = hookClass ?? spec.classify({ ...merged, ...finalRow });
 
   // --- rules ---------------------------------------------------------------------------
   if (rowClass === "structure" && projectId) {
@@ -332,26 +374,14 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
   if (table === "drawings.drawings" && (merged.project_id != null || merged.account_id != null)) {
     if (!existing || (existing.project_id == null && existing.account_id == null)) { extra.attached_at = new Date(); extra.attached_by = ctx.actorId; }
   }
-  if (table === "drawings.annotations") {
-    if (existing) row.class = existing.class; // stamped once, never recomputed (spec §5.3) — W3 owns the stamp rule
-    else if (row.class == null && row.layer_id != null) {
-      const layer = await sp<{ class: string }[]>`select class from drawings.layers where id = ${row.layer_id as string} and organization_id = ${ctx.organizationId}`;
-      if (layer[0]) row.class = layer[0].class;
-    }
-  }
-
-  // --- per-table hook (W3's seam) ----------------------------------------------------
-  let finalRow = row;
-  let redirected = false;
-  if (spec.rules) {
-    const hooked = await spec.rules({ tx: sp, table, row, existing, actorId: ctx.actorId, role: ctx.role, isAdmin: ctx.isAdmin, projectId });
-    if (hooked.kind === "reject") return { kind: "rejected", reason: hooked.reason, detail: hooked.detail, projectId, walkId: walkRef(row, verified) };
-    finalRow = hooked.row;
-    redirected = !!hooked.redirected;
+  // deleted_by / server stamps apply to the hook's row too (the hook never touches the sync set)
+  if (finalRow !== row) {
+    if (row.deleted_by !== undefined) finalRow.deleted_by = row.deleted_by; else delete finalRow.deleted_by;
+    if (row.status !== undefined) finalRow.status = row.status;
   }
 
   // --- upsert ---------------------------------------------------------------------------
-  const changed = await upsert(sp, table, { ...finalRow, ...extra });
+  const changed = await upsert(sp, table, { ...finalRow, ...hookExtra, ...extra });
   if (!changed) {
     const after = await readExisting(sp, table, id, ctx.organizationId);
     if (!after) {
@@ -362,7 +392,7 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
       // Idempotent replay: identical revision already stored. Heal a missing event, write nothing else.
       await appendSyncEvent(sp, ctx, table, finalRow, projectId, "noop", rowClass);
       await runRules(sp, ctx, table, { ...after, ...finalRow }, projectId, "updated", rowClass);
-      return { kind: "accepted", accepted: { table, id, revision, op: "noop", ...(redirected ? { redirected } : {}) } };
+      return { kind: "accepted", accepted: { table, id, revision, op: "noop", ...redirectFields(redirected, redirectedTo, redirectReason) } };
     }
     if (after.deleted_at != null && finalRow.deleted_at == null && revision > Number(after.revision)) {
       return { kind: "rejected", reason: "stale_tombstone", detail: `row is tombstoned at revision ${after.revision}`, projectId, walkId: walkRef(row, verified) };
@@ -379,12 +409,14 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
   if (projectId && state) {
     const roomId = spec.room === "self" ? id : spec.room === "room_id" ? ((merged.room_id as string | null) ?? null) : null;
     const roomHint = (merged.room_hint as string | null) ?? null;
-    const drawingId = isUuid(merged.drawing_id) ? (merged.drawing_id as string) : null;
+    const drawingId = hookDrawingId !== undefined ? hookDrawingId : isUuid(merged.drawing_id) ? (merged.drawing_id as string) : null;
     const walkId = walkRef(finalRow, verified);
     if (rowClass === "structure") {
+      // W3: a structure-class annotation is its own review kind (spec §5.3 R-structure); the op rides in diff.
+      const changeKind: ChangeKind = table === "drawings.annotations" ? "annotation" : (op as ChangeKind);
       await insertStructureChange(sp, ctx, {
         projectId, revision: state.working_revision, roomId, roomHint, drawingId, walkId, table, id,
-        changeKind: op as ChangeKind, diff: { before: existing ? pick(existing, spec.columns) : null, after: pick(finalRow, spec.columns) },
+        changeKind, diff: { op, before: existing ? pick(existing, spec.columns) : null, after: pick(finalRow, spec.columns) },
         occurredAt: finalRow.occurred_at as string,
       });
     } else if (merged.captured_revision != null && Number(merged.captured_revision) < state.published_revision) {
@@ -397,7 +429,12 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
     }
   }
 
-  return { kind: "accepted", accepted: { table, id, revision, op, ...(redirected ? { redirected } : {}) } };
+  return { kind: "accepted", accepted: { table, id, revision, op, ...redirectFields(redirected, redirectedTo, redirectReason) } };
+}
+
+function redirectFields(redirected: boolean, to: string | undefined, reason: "locked" | "policy" | undefined): Partial<AcceptedRow> {
+  if (!redirected) return {};
+  return { redirected: true, ...(to ? { redirected_to_layer_id: to } : {}), ...(reason ? { redirect_reason: reason } : {}) };
 }
 
 //------------------------------------------------------------------------------
