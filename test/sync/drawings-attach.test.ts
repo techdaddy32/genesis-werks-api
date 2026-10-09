@@ -1,4 +1,5 @@
 // row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08
+// row: W4-fix · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — designers may file
 // Drawings attach / detach / move / copy (spec §5.2, §5.3 re-evaluation at attach, §6 check 2):
 // in place, no rekey; room_hint → room_id; room_hint_pending; structure-layer rows surface as
 // proposals; detach rewrites room_id back to the hint and withdraws pending rows; zero deletes.
@@ -80,9 +81,10 @@ describe.skipIf(!available)("drawings attach / detach / move / copy", () => {
   });
   afterAll(async () => { await owner.end({ timeout: 2 }); });
 
-  it("attach: technician 403; designer 403 (office/admin act); 400 unless exactly one of project_id | account_id; 404 unknown drawing / project / account", async () => {
+  it("attach: technician 403; designer allowed (Craig 2026-10-09); 400 unless exactly one of project_id | account_id; 404 unknown drawing / project / account", async () => {
     expect((await call("POST", t.techA, `/drawings/${drawing.id}/attach`, { project_id: t.project })).status).toBe(403);
-    expect((await call("POST", t.designerB, `/drawings/${drawing.id}/attach`, { project_id: t.project })).status).toBe(403);
+    // designers may file (Craig 2026-10-09): a bad body still 400s for them, proving the role gate passed
+    expect((await call("POST", t.designerB, `/drawings/${drawing.id}/attach`, {})).status).toBe(400);
     expect((await call("POST", t.office, `/drawings/${drawing.id}/attach`, {})).status).toBe(400);
     expect((await call("POST", t.office, `/drawings/${drawing.id}/attach`, { project_id: t.project, account_id: t.account })).status).toBe(400);
     expect((await call("POST", t.office, `/drawings/${drawing.id}/attach`, { project_id: "nope" })).status).toBe(400);

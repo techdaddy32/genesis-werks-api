@@ -1,8 +1,9 @@
 // row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — drawings attach / detach / move / copy (spec §5.2) + R-move promotion (spec §2a fix 2, §5.3)
+// row: W4-fix · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — designers may attach / detach / move (Craig)
 //==============================================================================
 // sync/drawings.ts — the Worker acts on a drawing's ANCHOR and the one promotion path.
 //
-//   POST /drawings/:id/attach {project_id | account_id}   (exactly one; office / admin)
+//   POST /drawings/:id/attach {project_id | account_id}   (exactly one; designer / office / admin — Craig 2026-10-09)
 //     ONE UPDATE on drawings.drawings (project_id | account_id, attached_at/by, received_at).
 //     Project attach, in the same transaction:
 //       • polygons / placements of the drawing: project_id := project where NULL, account_id likewise
@@ -15,7 +16,7 @@
 //         nothing is silently promoted, no row's class changes.
 //     Account attach resolves nothing (no rooms at Account level): a pure filing act.
 //     Re-attach to the SAME anchor → 200 noop; attached elsewhere → 409 (use /move).
-//   POST /drawings/:id/detach                                (office / admin)
+//   POST /drawings/:id/detach                                (designer / office / admin)
 //     IN PLACE: project_id / account_id NULL, detached_at. For a project detach: every UNREVIEWED
 //     structure_changes row this drawing raised → review_outcome 'withdrawn'; room_id on polygons /
 //     placements / annotations rewritten back to room_hint (the room NAME is kept, so the drawing
@@ -79,6 +80,10 @@ export function isOfficeOrAdmin(ctx: OrganizationContext): boolean {
 function mayCopy(ctx: OrganizationContext): boolean {
   return isOfficeOrAdmin(ctx) || ctx.role === "designer";
 }
+/** Filing (attach / detach / move) — designers file their own work (Craig, 2026-10-09; supersedes W4 judgement call 1). */
+function mayFile(ctx: OrganizationContext): boolean {
+  return mayCopy(ctx);
+}
 
 export async function lockDrawing(tx: Tx, drawingId: string, org: string): Promise<DrawingRow | null> {
   const rows = await tx<DrawingRow[]>`
@@ -129,7 +134,7 @@ export interface AttachResolution {
 export async function attachDrawing(ctx: OrganizationContext, drawingId: string, body: unknown): Promise<RouteResult> {
   if (!isUuid(drawingId)) return { status: 400, body: { error: "drawing id must be a UUID" } };
   if (ctx.revoked) return { status: 403, body: { error: "member is inactive" } };
-  if (!isOfficeOrAdmin(ctx)) return { status: 403, body: { error: "only office or admin may attach a drawing" } };
+  if (!mayFile(ctx)) return { status: 403, body: { error: "only designer, office or admin may attach a drawing" } };
   const anchor = parseAnchor(body);
   if (!anchor) return { status: 400, body: { error: "exactly one of project_id | account_id (UUID) is required" } };
   const did = drawingId.toLowerCase();
@@ -305,7 +310,7 @@ async function proposeStructureLayerRows(tx: Tx, ctx: OrganizationContext, drawi
 export async function detachDrawing(ctx: OrganizationContext, drawingId: string): Promise<RouteResult> {
   if (!isUuid(drawingId)) return { status: 400, body: { error: "drawing id must be a UUID" } };
   if (ctx.revoked) return { status: 403, body: { error: "member is inactive" } };
-  if (!isOfficeOrAdmin(ctx)) return { status: 403, body: { error: "only office or admin may detach a drawing" } };
+  if (!mayFile(ctx)) return { status: 403, body: { error: "only designer, office or admin may detach a drawing" } };
   const did = drawingId.toLowerCase();
   return withOrg(ctx, async (tx) => {
     const d = await lockDrawing(tx, did, ctx.organizationId);
@@ -379,7 +384,7 @@ async function detachInTx(tx: Tx, ctx: OrganizationContext, d: DrawingRow): Prom
 export async function moveDrawing(ctx: OrganizationContext, drawingId: string, body: unknown): Promise<RouteResult> {
   if (!isUuid(drawingId)) return { status: 400, body: { error: "drawing id must be a UUID" } };
   if (ctx.revoked) return { status: 403, body: { error: "member is inactive" } };
-  if (!isOfficeOrAdmin(ctx)) return { status: 403, body: { error: "only office or admin may move a drawing" } };
+  if (!mayFile(ctx)) return { status: 403, body: { error: "only designer, office or admin may move a drawing" } };
   const anchor = parseAnchor(body);
   if (!anchor) return { status: 400, body: { error: "exactly one of project_id | account_id (UUID) is required" } };
   const did = drawingId.toLowerCase();
