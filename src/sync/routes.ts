@@ -4,6 +4,7 @@
 // row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — drawings attach/detach/move/copy · PATCH /annotations/:id (R-move) · version lifecycle (list / transition / compare)
 // row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — plan import (POST /drawing-versions · POST /pages) · carry-forward · walk review link (export · GET /walk/:token HTML · reply · pull-replies) · GET /files/:id · GET /projects/:id/history · SyncResponse.contentType (raw bodies)
 // row: W5b · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — office list routes (GET /walks · GET /walks/:id · GET+PATCH /sync/rejections · GET /members · GET /projects)
+// row: A2-fix4 · 2026-10-09 — /diagnostics
 //==============================================================================
 // sync/routes.ts — HTTP glue for the walk-tool routes (new schema, 001→090).
 //
@@ -47,6 +48,7 @@
 //   POST   /walks/:id/pull-replies            add-only merge → 200 {merged, unmatched, skipped}
 //   GET    /files/:id                         bytes of a landed file (raw body, Content-Type = the row's) · 404 pending
 //   GET    /projects/:id/history?since&limit  → 200 {events[]} newest first
+//   A2-fix4: POST /diagnostics {message, kind?, device_id?, walk_id?, project_id?, context?} → 201 · GET /diagnostics?limit (office/admin)
 //   W5b (sync/office.ts)
 //   GET    /walks?status&unattached=1&created_by&since&limit → 200 {walks[{…, created_by_name, counts{notes,media,placements}, pending_files}], next_since, truncated} newest first (own walks; designer/office/admin: all)
 //   GET    /walks/:id                         → 200 {walk: {…same…, rooms[{room_id, room_name, room_hint, rows}]}} · 403 not yours · 404
@@ -72,6 +74,7 @@ import { createDrawingVersion, recordPages } from "./plan-import";
 import { carryForward } from "./carry-forward";
 import { exportWalk, renderWalkPage, postWalkReply, pullReplies } from "./walk-review";
 import { projectHistory } from "./history";
+import { postDiagnostic, listDiagnostics } from "./diagnostics";
 import { listWalks, getWalk, listRejections, resolveRejection, listMembers, listProjects } from "./office";
 import { takeCheckout, renewCheckout, releaseCheckout, overrideCheckout } from "./checkout";
 import { getReview, patchReview, publishProject } from "./review";
@@ -129,7 +132,7 @@ export function isSyncPath(path: string): boolean {
     RE_WALK_EXPORT.test(path) || RE_WALK_PULL.test(path) || RE_WALK_PAGE.test(path) || RE_WALK_REPLY.test(path) ||
     RE_FILE_GET.test(path) || RE_HISTORY.test(path) ||
     path === "/walks" || RE_WALK_ONE.test(path) || path === "/sync/rejections" || RE_REJECTION_ONE.test(path) ||
-    path === "/members" || path === "/projects"
+    path === "/members" || path === "/projects" || path === "/diagnostics"
   );
 }
 
@@ -349,6 +352,12 @@ export async function handleSyncRoute(request: Request, env: Env, path: string, 
   if ((m = RE_HISTORY.exec(path))) {
     if (method !== "GET") return notAllowed;
     return projectHistory(ctx, m[1], new URL(request.url).searchParams);
+  }
+
+  if (path === "/diagnostics") {
+    if (method === "POST") return postDiagnostic(ctx, await readJson(request));
+    if (method === "GET") return listDiagnostics(ctx, new URL(request.url).searchParams);
+    return notAllowed;
   }
 
   // --- W5b ----------------------------------------------------------------------------
