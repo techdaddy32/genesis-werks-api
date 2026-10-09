@@ -1,5 +1,6 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — scheduled(): walk-tool cron (lease warnings, file verify, orphan report) behind SYNC_ROUTES
+// row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — a SyncResponse with contentType (GET /walk/:token HTML, GET /files/:id bytes) is sent verbatim, not as JSON
 //==============================================================================
 // index.ts — Worker entry point: HTTP router + cron handler.
 //
@@ -1148,7 +1149,11 @@ export default {
       // not have, so a plain env flag gates these instead. /sync/calendar below is untouched.
       if (env.SYNC_ROUTES === "on") {
         const r = await handleSyncRoute(request, env, path, method);
-        if (r) return json(cors, r.status, r.body);
+        if (r) {
+          // W5: raw bodies (text/html review page, file bytes) carry their own Content-Type.
+          if (r.contentType) return new Response(r.body as BodyInit, { status: r.status, headers: { "Content-Type": r.contentType, ...(r.headers ?? {}), ...cors } });
+          return json(cors, r.status, r.body);
+        }
       }
 
       // POST /sync/calendar

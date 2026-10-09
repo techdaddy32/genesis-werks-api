@@ -1,4 +1,5 @@
 // row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — drawing-version lifecycle (spec §2b Amendment 2): list, transition, compare
+// row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — VERSION_COLS / versionView / readVersion exported for plan-import (POST /drawing-versions) and carry-forward
 //==============================================================================
 // sync/versions.ts — Amendment 2: two gates (internal + client) on ONE status column, audit as
 // rows, and the version compare. kind='plan' only — a whiteboard has no versions (409 everywhere).
@@ -66,7 +67,7 @@ export function mayTransition(ctx: OrganizationContext, to: VersionStatus): bool
   return false;
 }
 
-interface VersionRow extends JsonRow {
+export interface VersionRow extends JsonRow {
   id: string;
   drawing_id: string;
   version_no: number;
@@ -78,18 +79,18 @@ interface VersionRow extends JsonRow {
   drawing_deleted_at: Date | null;
 }
 
-const VERSION_COLS = (tx: Tx) => tx`
+export const VERSION_COLS = (tx: Tx) => tx`
   v.id, v.organization_id, v.drawing_id, v.version_no, v.label, v.source_file_id, v.page_count, v.raster_status,
   v.status, v.status_by, v.status_at, v.internal_approved_by, v.internal_approved_at, v.client_approved_name, v.client_approved_at,
   v.client_contact_id, v.superseded_by_version_id, v.revision, v.occurred_at, v.received_at, v.created_by, v.deleted_at, v.custom,
   v.created_at, v.updated_at`;
 
-function versionView(v: JsonRow): Record<string, unknown> {
+export function versionView(v: JsonRow): Record<string, unknown> {
   const { organization_id: _o, drawing_kind: _k, project_id: _p, drawing_deleted_at: _d, ...rest } = v;
   return rest;
 }
 
-async function readVersion(tx: Tx, id: string, org: string, lock = false): Promise<VersionRow | null> {
+export async function readVersion(tx: Tx, id: string, org: string, lock = false): Promise<VersionRow | null> {
   const rows = lock
     ? await tx<VersionRow[]>`
         select ${VERSION_COLS(tx)}, d.kind as drawing_kind, d.project_id, d.deleted_at as drawing_deleted_at

@@ -1,5 +1,6 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — hardened PUT; POST /files; POST /files/:id/uploaded; verify + orphan sweep (cron)
+// row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — GET /files/:id streams a landed file's bytes (the walk review page's <img> source)
 //==============================================================================
 // sync/files.ts — shared.files lifecycle (walk spec §5.4, §6 check 6).
 //
@@ -16,6 +17,9 @@
 //                                     422 on declared-sha mismatch; 413 over MAX_UPLOAD_BYTES)
 //   POST /files/:id/uploaded {sha256} the device declares the bytes are in R2 (used when bytes
 //                                     went up out-of-band) → 'uploaded'; the cron verifies.
+//   GET  /files/:id                   (W5) the bytes of an 'uploaded' | 'verified' row of this
+//                                     org, Content-Type = the row's; 404 pending / unknown; the
+//                                     body is RAW (routes.ts returns contentType + bytes).
 //   cron verifyUploadedFiles          'uploaded' rows: sha256 vs R2 (checksum header when
 //                                     present, else a streamed digest) → 'verified'; mismatch →
 //                                     event file.verify_failed, row stays 'uploaded'; object
@@ -27,7 +31,7 @@
 //==============================================================================
 
 import type { OrganizationContext } from "../org-context";
-import { withOrg } from "../org-context";
+import { withOrg, withOrgRead } from "../org-context";
 import { isUuid } from "../db";
 import { emitEvent, type RouteResult } from "./checkout";
 
@@ -129,6 +133,36 @@ export async function receiveFileBytes(ctx: OrganizationContext, sink: FileSink 
   });
   if (!updated) return { status: 409, body: { error: "file state changed during upload" } };
   return { status: 200, body: { file_id: row.id, upload_status: "uploaded", sha256, byte_size: bytes.byteLength, storage_key: row.storage_key } };
+}
+
+//------------------------------------------------------------------------------
+// GET /files/:id (W5)
+//------------------------------------------------------------------------------
+
+export interface RawResult {
+  status: number;
+  body: ArrayBuffer | string;
+  contentType: string;
+  headers?: Record<string, string>;
+}
+
+/** The bytes of a landed file of this Organization (any member). Never serves a 'pending' row. */
+export async function serveFileBytes(ctx: OrganizationContext, store: Pick<FileStore, "get"> | undefined, fileId: string): Promise<RawResult | RouteResult> {
+  if (!isUuid(fileId)) return { status: 400, body: { error: "file id must be a UUID" } };
+  if (!store) return { status: 503, body: { error: "FILES binding is not configured" } };
+  const row = await withOrgRead(ctx, async (tx) => {
+    const rows = await tx<(Pick<FileRow, "id" | "storage_key" | "upload_status" | "content_type"> & { filename: string })[]>`
+      select id, storage_key, upload_status, content_type, filename from shared.files
+       where id = ${fileId.toLowerCase()} and organization_id = ${ctx.organizationId} and deleted_at is null`;
+    return rows[0] ?? null;
+  });
+  if (!row || row.upload_status === "pending") return { status: 404, body: { error: "file not found or its bytes have not landed" } };
+  const obj = await store.get(row.storage_key);
+  if (!obj) return { status: 404, body: { error: "file bytes are missing from storage" } };
+  return {
+    status: 200, body: await obj.arrayBuffer(), contentType: row.content_type || "application/octet-stream",
+    headers: { "Cache-Control": "private, max-age=300", "Content-Disposition": `inline; filename="${row.filename.replace(/["\r\n]/g, "_")}"` },
+  };
 }
 
 //------------------------------------------------------------------------------

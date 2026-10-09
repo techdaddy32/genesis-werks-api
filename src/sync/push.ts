@@ -1,6 +1,7 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — rules engine wired after the event; walks.project_id immutable via push (attach route only)
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — per-table hook moved BEFORE the class rules (annotations: class from the landing layer, redirect fields in the response); structure annotations → structure_changes('annotation'); template layers minted for drawings created in the batch (`created_layers`)
+// row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — after the batch, raster_status is refreshed for every drawing_version whose pages were pushed (spec §5.6: 'device' once every preview landed) → `raster_status[]`
 //==============================================================================
 // sync/push.ts — POST /sync/push: per-row idempotent upsert (walk spec §5.6–5.7).
 //
@@ -56,6 +57,7 @@ import { withOrg } from "../org-context";
 import { isUuid } from "../db";
 import { evaluateRules } from "../rules";
 import { ensureTemplateLayers, type CreatedLayer } from "./layers"; // importing registers the W3 hooks on TABLE_SPECS
+import { refreshRasterStatus, type RasterRefresh } from "./plan-import";
 import {
   TABLE_SPECS,
   PARENT_TARGETS,
@@ -120,6 +122,8 @@ export interface PushResult {
   files: FileResult[];
   /** Template layers the server minted for drawings created in this batch (W3). */
   created_layers: CreatedLayer[];
+  /** W5: raster_status of every drawing_version whose pages were in this batch (after the refresh). */
+  raster_status?: RasterRefresh[];
 }
 
 export class PushBodyError extends Error {
@@ -179,6 +183,17 @@ export async function pushBatch(ctx: OrganizationContext, body: PushBody, opts: 
       if (a.table === "drawings.drawings" && a.op === "created") {
         result.created_layers.push(...(await ensureTemplateLayers(tx, ctx, a.id, body.device_id)));
       }
+    }
+    // W5: pages pushed offline flip raster_status exactly like POST /pages does (spec §5.6).
+    const versionIds = new Set<string>();
+    for (const entry of body.rows) {
+      if (entry.table === "drawings.pages" && isUuid(entry.row.drawing_version_id) && result.accepted.some((a) => a.table === "drawings.pages" && a.id === String(entry.row.id).toLowerCase())) {
+        versionIds.add((entry.row.drawing_version_id as string).toLowerCase());
+      }
+    }
+    if (versionIds.size) {
+      result.raster_status = [];
+      for (const vid of versionIds) result.raster_status.push(await refreshRasterStatus(tx, ctx, vid));
     }
     result.files = await answerFiles(tx, ctx, body.files ?? [], opts.putUrlFor);
     return result;

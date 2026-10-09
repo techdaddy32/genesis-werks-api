@@ -2,6 +2,7 @@
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — checkout / review / publish / attach / files routes
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — layer CRUD routes (GET/POST /drawings/:id/layers · PATCH/DELETE /drawings/:id/layers/:layerId)
 // row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — drawings attach/detach/move/copy · PATCH /annotations/:id (R-move) · version lifecycle (list / transition / compare)
+// row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — plan import (POST /drawing-versions · POST /pages) · carry-forward · walk review link (export · GET /walk/:token HTML · reply · pull-replies) · GET /files/:id · GET /projects/:id/history · SyncResponse.contentType (raw bodies)
 //==============================================================================
 // sync/routes.ts — HTTP glue for the walk-tool routes (new schema, 001→090).
 //
@@ -35,6 +36,16 @@
 //   POST   /drawing-versions/:id/transition   {to, note?, client_name?, client_at?} → 200 {from, to, version, transition, superseded[]} · 400 · 403 role · 409 edge / whiteboard
 //   GET    /drawing-versions/:a/compare/:b    → 200 {a, b, pages[], changes[], summary} · 409 different drawings / whiteboard
 //   POST   /projects/:id/publish              (W2) now also: 404 unknown drawing_version_id · 409 version of another project / client_rejected / superseded
+//   W5 (sync/plan-import.ts · sync/carry-forward.ts · sync/walk-review.ts · sync/history.ts · files.ts)
+//   POST   /drawing-versions                  {drawing_id, source_file_id, page_count, label?} (designer/office/admin) → 201 {version} · 409 whiteboard / bytes not landed
+//   POST   /pages                             {drawing_version_id, pages:[{ordinal?, name?, orientation?, preview_file_id, source_page_no}]} → 200 {pages[], raster_status} · 422 unknown preview
+//   POST   /drawing-versions/:id/carry-forward {from_version_id, layer_ids?, include?} → 200 {copied, skipped, proposals} · 409 other drawing / no pages / no checkout · 403 other holder
+//   POST   /walks/:id/export                  {expires_in_days?=30} (designer/office/admin or creator) → 201 {export_id, share_token, url, expires_at}
+//   GET    /walk/:token                       login-gated → 200 text/html · 404 · 410 expired/revoked
+//   POST   /walk/:token/reply                 {entry_id, entry_table?, reply?, checked?, replied_by?} → 201 {reply_id}
+//   POST   /walks/:id/pull-replies            add-only merge → 200 {merged, unmatched, skipped}
+//   GET    /files/:id                         bytes of a landed file (raw body, Content-Type = the row's) · 404 pending
+//   GET    /projects/:id/history?since&limit  → 200 {events[]} newest first
 //
 // Mounted by src/index.ts ONLY when env.SYNC_ROUTES === "on" (the sandbox deployment), AFTER
 // the tenant-era /projects/:pid/(membership|forum-categories|action-items|forums) routes, which
@@ -48,7 +59,11 @@ import type { Env } from "../types";
 import { resolveOrganizationContext, OrgContextError, type OrganizationContext, type Authenticator } from "../org-context";
 import { parsePushBody, pushBatch, PushBodyError } from "./push";
 import { parsePullQuery, pullProject, PullQueryError } from "./pull";
-import { putUrlFor, receiveFileBytes, createFile, markUploaded } from "./files";
+import { putUrlFor, receiveFileBytes, createFile, markUploaded, serveFileBytes } from "./files";
+import { createDrawingVersion, recordPages } from "./plan-import";
+import { carryForward } from "./carry-forward";
+import { exportWalk, renderWalkPage, postWalkReply, pullReplies } from "./walk-review";
+import { projectHistory } from "./history";
 import { takeCheckout, renewCheckout, releaseCheckout, overrideCheckout } from "./checkout";
 import { getReview, patchReview, publishProject } from "./review";
 import { attachWalk } from "./attach";
@@ -59,6 +74,10 @@ import { listVersions, transitionVersion, compareVersions } from "./versions";
 export interface SyncResponse {
   status: number;
   body: unknown;
+  /** W5: when set, index.ts sends `body` verbatim (string | ArrayBuffer) with this Content-Type instead of JSON. */
+  contentType?: string;
+  /** W5: extra response headers for a raw body (Cache-Control, Content-Disposition). */
+  headers?: Record<string, string>;
 }
 
 export interface SyncRouteOptions {
@@ -77,6 +96,14 @@ const RE_DRAWING_VERSIONS = /^\/drawings\/([^/]+)\/versions$/;
 const RE_ANNOTATION = /^\/annotations\/([^/]+)$/;
 const RE_VERSION_TRANSITION = /^\/drawing-versions\/([^/]+)\/transition$/;
 const RE_VERSION_COMPARE = /^\/drawing-versions\/([^/]+)\/compare\/([^/]+)$/;
+// W5
+const RE_VERSION_CARRY = /^\/drawing-versions\/([^/]+)\/carry-forward$/;
+const RE_WALK_EXPORT = /^\/walks\/([^/]+)\/export$/;
+const RE_WALK_PULL = /^\/walks\/([^/]+)\/pull-replies$/;
+const RE_WALK_PAGE = /^\/walk\/([A-Za-z0-9_-]+)$/;
+const RE_WALK_REPLY = /^\/walk\/([A-Za-z0-9_-]+)\/reply$/;
+const RE_FILE_GET = /^\/files\/([^/]+)$/;
+const RE_HISTORY = /^\/projects\/([^/]+)\/history$/;
 
 /** True for the paths this module owns (never /sync/calendar, never the tenant-era /projects routes). */
 export function isSyncPath(path: string): boolean {
@@ -85,7 +112,10 @@ export function isSyncPath(path: string): boolean {
     RE_CHECKOUT.test(path) || RE_REVIEW.test(path) || RE_PUBLISH.test(path) || RE_WALK_ATTACH.test(path) ||
     path === "/files" || RE_FILE_UPLOADED.test(path) || RE_LAYERS.test(path) ||
     RE_DRAWING_ACT.test(path) || RE_DRAWING_VERSIONS.test(path) || RE_ANNOTATION.test(path) ||
-    RE_VERSION_TRANSITION.test(path) || RE_VERSION_COMPARE.test(path)
+    RE_VERSION_TRANSITION.test(path) || RE_VERSION_COMPARE.test(path) ||
+    path === "/drawing-versions" || path === "/pages" || RE_VERSION_CARRY.test(path) ||
+    RE_WALK_EXPORT.test(path) || RE_WALK_PULL.test(path) || RE_WALK_PAGE.test(path) || RE_WALK_REPLY.test(path) ||
+    RE_FILE_GET.test(path) || RE_HISTORY.test(path)
   );
 }
 
@@ -259,6 +289,52 @@ export async function handleSyncRoute(request: Request, env: Env, path: string, 
   if ((m = RE_VERSION_COMPARE.exec(path))) {
     if (method !== "GET") return notAllowed;
     return compareVersions(ctx, m[1], m[2]);
+  }
+
+  // --- W5 -----------------------------------------------------------------------------
+  if (path === "/drawing-versions") {
+    if (method !== "POST") return notAllowed;
+    return createDrawingVersion(ctx, await readJsonOrEmpty(request));
+  }
+
+  if (path === "/pages") {
+    if (method !== "POST") return notAllowed;
+    return recordPages(ctx, await readJsonOrEmpty(request));
+  }
+
+  if ((m = RE_VERSION_CARRY.exec(path))) {
+    if (method !== "POST") return notAllowed;
+    return carryForward(ctx, m[1], await readJsonOrEmpty(request));
+  }
+
+  if ((m = RE_WALK_EXPORT.exec(path))) {
+    if (method !== "POST") return notAllowed;
+    return exportWalk(ctx, m[1], await readJsonOrEmpty(request));
+  }
+
+  if ((m = RE_WALK_PULL.exec(path))) {
+    if (method !== "POST") return notAllowed;
+    return pullReplies(ctx, m[1]);
+  }
+
+  if ((m = RE_WALK_PAGE.exec(path))) {
+    if (method !== "GET") return notAllowed;
+    return renderWalkPage(ctx, m[1]);
+  }
+
+  if ((m = RE_WALK_REPLY.exec(path))) {
+    if (method !== "POST") return notAllowed;
+    return postWalkReply(ctx, m[1], await readJsonOrEmpty(request));
+  }
+
+  if ((m = RE_FILE_GET.exec(path))) {
+    if (method !== "GET") return notAllowed;
+    return serveFileBytes(ctx, env.FILES, m[1]);
+  }
+
+  if ((m = RE_HISTORY.exec(path))) {
+    if (method !== "GET") return notAllowed;
+    return projectHistory(ctx, m[1], new URL(request.url).searchParams);
   }
 
   return null;

@@ -1,5 +1,6 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — annotations carry layer_ordinal and are returned in render order (layer ordinal, z, received_at)
+// row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — structure now carries drawings.drawing_versions (read-only: status / raster_status / approval columns) for the project's drawings
 //==============================================================================
 // sync/pull.ts — GET /sync/pull?project_id=<uuid>&since=<ISO timestamptz>
 //
@@ -143,6 +144,8 @@ export async function pullProject(ctx: OrganizationContext, q: PullQuery): Promi
       "places.room_polygons": await byProject("places.room_polygons"),
       "places.location_placements": await byProject("places.location_placements"),
       "drawings.drawings": await byProject("drawings.drawings"),
+      // W5: versions ride along read-only (not in the push allow-list; status moves via /drawing-versions/:id/transition)
+      "drawings.drawing_versions": await viaDrawing("drawings.drawing_versions"),
       "drawings.pages": await viaDrawing("drawings.pages"),
       "drawings.layers": await viaDrawing("drawings.layers"),
     };
