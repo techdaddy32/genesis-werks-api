@@ -3,6 +3,7 @@
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — layer CRUD routes (GET/POST /drawings/:id/layers · PATCH/DELETE /drawings/:id/layers/:layerId)
 // row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — drawings attach/detach/move/copy · PATCH /annotations/:id (R-move) · version lifecycle (list / transition / compare)
 // row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — plan import (POST /drawing-versions · POST /pages) · carry-forward · walk review link (export · GET /walk/:token HTML · reply · pull-replies) · GET /files/:id · GET /projects/:id/history · SyncResponse.contentType (raw bodies)
+// row: W5b · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — office list routes (GET /walks · GET /walks/:id · GET+PATCH /sync/rejections · GET /members · GET /projects)
 //==============================================================================
 // sync/routes.ts — HTTP glue for the walk-tool routes (new schema, 001→090).
 //
@@ -46,6 +47,13 @@
 //   POST   /walks/:id/pull-replies            add-only merge → 200 {merged, unmatched, skipped}
 //   GET    /files/:id                         bytes of a landed file (raw body, Content-Type = the row's) · 404 pending
 //   GET    /projects/:id/history?since&limit  → 200 {events[]} newest first
+//   W5b (sync/office.ts)
+//   GET    /walks?status&unattached=1&created_by&since&limit → 200 {walks[{…, created_by_name, counts{notes,media,placements}, pending_files}], next_since, truncated} newest first (own walks; designer/office/admin: all)
+//   GET    /walks/:id                         → 200 {walk: {…same…, rooms[{room_id, room_name, room_hint, rows}]}} · 403 not yours · 404
+//   GET    /sync/rejections?since&resolved=0|1&walk_id&limit → 200 {rejections[{…, actor_name, proposed, resolved_at, resolution}]} newest first · 403 technician
+//   PATCH  /sync/rejections/:id               {resolution: adopted|discarded|superseded, note?} (office/admin) → 200 {rejection, applied} · 409 already resolved / not adoptable / re-push refused (rolled back)
+//   GET    /members                           → 200 {members[{id, name, email, role, is_admin, revoked}]}
+//   GET    /projects?since&limit              → 200 {projects[{id, name, account_id, account_name, published_revision, checkout{user_id,user_name,expires_at}|null, unsynced_walks}]}
 //
 // Mounted by src/index.ts ONLY when env.SYNC_ROUTES === "on" (the sandbox deployment), AFTER
 // the tenant-era /projects/:pid/(membership|forum-categories|action-items|forums) routes, which
@@ -64,6 +72,7 @@ import { createDrawingVersion, recordPages } from "./plan-import";
 import { carryForward } from "./carry-forward";
 import { exportWalk, renderWalkPage, postWalkReply, pullReplies } from "./walk-review";
 import { projectHistory } from "./history";
+import { listWalks, getWalk, listRejections, resolveRejection, listMembers, listProjects } from "./office";
 import { takeCheckout, renewCheckout, releaseCheckout, overrideCheckout } from "./checkout";
 import { getReview, patchReview, publishProject } from "./review";
 import { attachWalk } from "./attach";
@@ -104,6 +113,9 @@ const RE_WALK_PAGE = /^\/walk\/([A-Za-z0-9_-]+)$/;
 const RE_WALK_REPLY = /^\/walk\/([A-Za-z0-9_-]+)\/reply$/;
 const RE_FILE_GET = /^\/files\/([^/]+)$/;
 const RE_HISTORY = /^\/projects\/([^/]+)\/history$/;
+// W5b
+const RE_WALK_ONE = /^\/walks\/([^/]+)$/;
+const RE_REJECTION_ONE = /^\/sync\/rejections\/([^/]+)$/;
 
 /** True for the paths this module owns (never /sync/calendar, never the tenant-era /projects routes). */
 export function isSyncPath(path: string): boolean {
@@ -115,7 +127,9 @@ export function isSyncPath(path: string): boolean {
     RE_VERSION_TRANSITION.test(path) || RE_VERSION_COMPARE.test(path) ||
     path === "/drawing-versions" || path === "/pages" || RE_VERSION_CARRY.test(path) ||
     RE_WALK_EXPORT.test(path) || RE_WALK_PULL.test(path) || RE_WALK_PAGE.test(path) || RE_WALK_REPLY.test(path) ||
-    RE_FILE_GET.test(path) || RE_HISTORY.test(path)
+    RE_FILE_GET.test(path) || RE_HISTORY.test(path) ||
+    path === "/walks" || RE_WALK_ONE.test(path) || path === "/sync/rejections" || RE_REJECTION_ONE.test(path) ||
+    path === "/members" || path === "/projects"
   );
 }
 
@@ -335,6 +349,37 @@ export async function handleSyncRoute(request: Request, env: Env, path: string, 
   if ((m = RE_HISTORY.exec(path))) {
     if (method !== "GET") return notAllowed;
     return projectHistory(ctx, m[1], new URL(request.url).searchParams);
+  }
+
+  // --- W5b ----------------------------------------------------------------------------
+  if (path === "/walks") {
+    if (method !== "GET") return notAllowed;
+    return listWalks(ctx, new URL(request.url).searchParams);
+  }
+
+  if ((m = RE_WALK_ONE.exec(path))) {
+    if (method !== "GET") return notAllowed;
+    return getWalk(ctx, m[1]);
+  }
+
+  if (path === "/sync/rejections") {
+    if (method !== "GET") return notAllowed;
+    return listRejections(ctx, new URL(request.url).searchParams);
+  }
+
+  if ((m = RE_REJECTION_ONE.exec(path))) {
+    if (method !== "PATCH") return notAllowed;
+    return resolveRejection(ctx, m[1], await readJsonOrEmpty(request));
+  }
+
+  if (path === "/members") {
+    if (method !== "GET") return notAllowed;
+    return listMembers(ctx);
+  }
+
+  if (path === "/projects") {
+    if (method !== "GET") return notAllowed;
+    return listProjects(ctx, new URL(request.url).searchParams);
   }
 
   return null;

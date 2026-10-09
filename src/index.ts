@@ -1,6 +1,7 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — scheduled(): walk-tool cron (lease warnings, file verify, orphan report) behind SYNC_ROUTES
 // row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — a SyncResponse with contentType (GET /walk/:token HTML, GET /files/:id bytes) is sent verbatim, not as JSON
+// row: W5b · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — office list routes: tenant-era GET /projects (Zoho picker) yields to sync/office.ts when SYNC_ROUTES=on
 //==============================================================================
 // index.ts — Worker entry point: HTTP router + cron handler.
 //
@@ -192,7 +193,8 @@ export default {
       }
 
       // GET /projects?q=&all= — search client projects for the New WO picker.
-      if (path === "/projects" && method === "GET") {
+      // W5b: on the sandbox (SYNC_ROUTES=on) GET /projects is the walk-tool project list (sync/office.ts) instead.
+      if (path === "/projects" && method === "GET" && env.SYNC_ROUTES !== "on") {
         const q = url.searchParams.get("q") ?? "";
         const includeAll = url.searchParams.get("all") === "true";
         const refresh = url.searchParams.get("refresh") === "1"; // bypass the 2-min project cache

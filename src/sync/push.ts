@@ -2,6 +2,7 @@
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — rules engine wired after the event; walks.project_id immutable via push (attach route only)
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — per-table hook moved BEFORE the class rules (annotations: class from the landing layer, redirect fields in the response); structure annotations → structure_changes('annotation'); template layers minted for drawings created in the batch (`created_layers`)
 // row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — after the batch, raster_status is refreshed for every drawing_version whose pages were pushed (spec §5.6: 'device' once every preview landed) → `raster_status[]`
+// row: W5b · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — office list routes: pushBatchInTx (batch body on a caller-owned transaction) + PushOptions.adopt (own-row rule waived for office adoption of a held rejection)
 //==============================================================================
 // sync/push.ts — POST /sync/push: per-row idempotent upsert (walk spec §5.6–5.7).
 //
@@ -136,6 +137,13 @@ export class PushBodyError extends Error {
 export interface PushOptions {
   /** Builds the PUT url for a file row still 'pending' (see sync/files.ts). */
   putUrlFor: (fileId: string) => string;
+  /**
+   * W5b: office adoption of a held sync_rejection (PATCH /sync/rejections/:id {resolution:'adopted'}).
+   * The acting member is office/admin re-applying a row on another member's behalf, so the
+   * own-row rule (update/tombstone only by created_by) is waived for this batch. NOTHING else
+   * is: shape, parent-exists, draft-walk, class and checkout rules all still apply.
+   */
+  adopt?: boolean;
 }
 
 //------------------------------------------------------------------------------
@@ -171,10 +179,15 @@ export function parsePushBody(input: unknown): PushBody {
 
 /** Push one batch for the resolved Organization context. ONE transaction. */
 export async function pushBatch(ctx: OrganizationContext, body: PushBody, opts: PushOptions): Promise<PushResult> {
-  return withOrg(ctx, async (tx) => {
+  return withOrg(ctx, (tx) => pushBatchInTx(tx, ctx, body, opts));
+}
+
+/** W5b: the batch body on an already-open Organization transaction (office adoption runs it inside its own). */
+export async function pushBatchInTx(tx: Tx, ctx: OrganizationContext, body: PushBody, opts: PushOptions): Promise<PushResult> {
+  {
     const result: PushResult = { accepted: [], rejected: [], files: [], created_layers: [] };
     for (const entry of body.rows) {
-      const outcome = await pushOneRow(tx, ctx, body, entry);
+      const outcome = await pushOneRow(tx, ctx, body, entry, !!opts.adopt);
       if (outcome.kind === "accepted") result.accepted.push(outcome.row);
       else result.rejected.push(outcome.row);
     }
@@ -197,7 +210,7 @@ export async function pushBatch(ctx: OrganizationContext, body: PushBody, opts: 
     }
     result.files = await answerFiles(tx, ctx, body.files ?? [], opts.putUrlFor);
     return result;
-  });
+  }
 }
 
 //------------------------------------------------------------------------------
@@ -216,7 +229,7 @@ interface Decision {
   walkId?: string | null;
 }
 
-async function pushOneRow(tx: Tx, ctx: OrganizationContext, body: PushBody, entry: PushRowInput): Promise<Outcome> {
+async function pushOneRow(tx: Tx, ctx: OrganizationContext, body: PushBody, entry: PushRowInput, adopt = false): Promise<Outcome> {
   const table = entry.table;
   const rawId = entry.row.id;
   const id = isUuid(rawId) ? (rawId as string).toLowerCase() : null;
@@ -239,7 +252,7 @@ async function pushOneRow(tx: Tx, ctx: OrganizationContext, body: PushBody, entr
 
   let decision: Decision;
   try {
-    decision = await tx.savepoint((sp) => processRow(sp, ctx, body, table, { ...entry.row, id }));
+    decision = await tx.savepoint((sp) => processRow(sp, ctx, body, table, { ...entry.row, id }, adopt));
   } catch (e) {
     const mapped = mapPgError(e);
     if (!mapped) throw e; // 42501 (RLS/privilege) and unknown errors fail the whole batch — fail closed
@@ -256,7 +269,7 @@ interface StructureState {
   checkout_expires_at: Date | null;
 }
 
-async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, table: SyncTable, incoming: JsonRow): Promise<Decision> {
+async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, table: SyncTable, incoming: JsonRow, adopt = false): Promise<Decision> {
   const spec = TABLE_SPECS[table];
   const id = incoming.id as string;
   const allowed = new Set<string>(["id", ...SYNC_SET_COLUMNS, ...spec.columns]);
@@ -367,9 +380,10 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
       return { kind: "rejected", reason: "checkout_expired", detail: "structure checkout has expired", projectId, walkId: walkRef(row, verified) };
     }
   } else if (existing) {
-    // capture rows, and unattached structure rows: own-row update/tombstone only (admin may tombstone any)
+    // capture rows, and unattached structure rows: own-row update/tombstone only (admin may tombstone any;
+    // W5b: an office adoption of a held rejection re-applies on the creator's behalf — the only waiver)
     const own = existing.created_by === ctx.actorId;
-    if (!own && !(tombstoning && ctx.isAdmin)) {
+    if (!own && !(tombstoning && ctx.isAdmin) && !adopt) {
       return { kind: "rejected", reason: "not_row_owner", detail: "only the row's creator may update or tombstone it", projectId, walkId: walkRef(row, verified) };
     }
   }
