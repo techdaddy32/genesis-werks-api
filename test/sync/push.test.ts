@@ -1,4 +1,5 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
+// row: A2-fix · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — self-referencing walks.walk_id regression
 // POST /sync/push — the §5.6 rule table as implemented in src/sync/push.ts.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
@@ -108,6 +109,19 @@ describe.skipIf(!available)("POST /sync/push", () => {
       expect(r.rejected[0]).toMatchObject({ reason: "stale_tombstone" });
       expect((await ownerRow(owner, "places.location_notes", note.id as string))!.deleted_at).not.toBeNull();
       expect(await ownerCount(owner, "places.sync_rejections", { ref_id: note.id as string })).toBe(2);
+    });
+
+    it("a walk whose walk_id is its own id (036 convention, what the phone sends) is accepted, and its captures with it (A2-fix 2026-10-09)", async () => {
+      const walk = syncSet(t, t.techA, { project_id: null, status: "draft", label: "phone quick walk", started_at: new Date().toISOString() });
+      walk.walk_id = walk.id;
+      const note = syncSet(t, t.techA, { walk_id: walk.id, room_hint: "Garage", body: "from the phone" });
+      const r = await push(t.techA, [{ table: "places.walks", row: walk }, { table: "places.location_notes", row: note }], { walk_id: walk.id as string });
+      expect(r.rejected).toEqual([]);
+      expect(r.accepted.map((a) => a.table)).toEqual(["places.walks", "places.location_notes"]);
+      expect((await ownerRow(owner, "places.walks", walk.id as string))!.walk_id).toBe(walk.id);
+      // a walk_id pointing at some OTHER (missing) walk is still unknown_parent
+      const ghost = syncSet(t, t.techA, { project_id: null, status: "draft", label: "ghost", started_at: new Date().toISOString(), walk_id: crypto.randomUUID() });
+      expect((await push(t.techA, [{ table: "places.walks", row: ghost }])).rejected[0]).toMatchObject({ reason: "unknown_parent" });
     });
 
     it("a capture under a DRAFT walk must carry hints, not room_id/project_id", async () => {

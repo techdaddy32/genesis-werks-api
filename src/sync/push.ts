@@ -2,6 +2,7 @@
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — rules engine wired after the event; walks.project_id immutable via push (attach route only)
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — per-table hook moved BEFORE the class rules (annotations: class from the landing layer, redirect fields in the response); structure annotations → structure_changes('annotation'); template layers minted for drawings created in the batch (`created_layers`)
 // row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — after the batch, raster_status is refreshed for every drawing_version whose pages were pushed (spec §5.6: 'device' once every preview landed) → `raster_status[]`
+// row: A2-fix · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — places.walks.walk_id = own id is not a parent lookup (first phone sync rejected every row with unknown_parent)
 // row: W5b · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — office list routes: pushBatchInTx (batch body on a caller-owned transaction) + PushOptions.adopt (own-row rule waived for office adoption of a held rejection)
 //==============================================================================
 // sync/push.ts — POST /sync/push: per-row idempotent upsert (walk spec §5.6–5.7).
@@ -324,6 +325,8 @@ async function processRow(sp: Tx, ctx: OrganizationContext, body: PushBody, tabl
   for (const [col, target] of Object.entries(PARENT_TARGETS)) {
     if (!allowed.has(col) || row[col] == null) continue;
     if (!isUuid(row[col])) return { kind: "rejected", reason: "schema", detail: `${col} must be a UUID` };
+    // A walk's own walk_id is itself (036: "walk_id is the row itself") — never a parent lookup (fix 2026-10-09).
+    if (table === "places.walks" && col === "walk_id" && (row[col] as string).toLowerCase() === String(row.id).toLowerCase()) { verified.set(col, true); continue; }
     const ok = await parentExists(sp, target, row[col] as string, ctx.organizationId);
     verified.set(col, ok);
     if (!ok) return { kind: "rejected", reason: "unknown_parent", detail: `${col} → ${target} not found in this organization`, ...safeRefs(row, verified) };
