@@ -1,4 +1,5 @@
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07
+// row: W5c · run: run-2026-10-07-drawing-layer-11 · 2026-10-09 — layerView exported for the GET /drawings/:id bundle (drawings-list.ts)
 //==============================================================================
 // sync/layers.ts — layer governance (drawing-layer spec §2a Amendment 1, §5.3, §5.5).
 //
@@ -388,7 +389,7 @@ function mayEditLayers(ctx: OrganizationContext): boolean {
   return isOfficeOrAdmin(ctx) || ctx.role === "designer";
 }
 
-function layerView(l: LayerRow | JsonRow): Record<string, unknown> {
+export function layerView(l: LayerRow | JsonRow): Record<string, unknown> {
   const r = l as JsonRow;
   return {
     id: r.id, drawing_id: r.drawing_id, template_id: r.template_id ?? null, name: r.name, ordinal: r.ordinal, class: r.class,

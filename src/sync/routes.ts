@@ -5,6 +5,7 @@
 // row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — plan import (POST /drawing-versions · POST /pages) · carry-forward · walk review link (export · GET /walk/:token HTML · reply · pull-replies) · GET /files/:id · GET /projects/:id/history · SyncResponse.contentType (raw bodies)
 // row: W5b · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — office list routes (GET /walks · GET /walks/:id · GET+PATCH /sync/rejections · GET /members · GET /projects)
 // row: A2-fix4 · 2026-10-09 — /diagnostics
+// row: W5c · run: run-2026-10-07-drawing-layer-11 · 2026-10-09 — drawings list + bundle (GET /drawings · GET /drawings/:id)
 //==============================================================================
 // sync/routes.ts — HTTP glue for the walk-tool routes (new schema, 001→090).
 //
@@ -56,6 +57,9 @@
 //   PATCH  /sync/rejections/:id               {resolution: adopted|discarded|superseded, note?} (office/admin) → 200 {rejection, applied} · 409 already resolved / not adoptable / re-push refused (rolled back)
 //   GET    /members                           → 200 {members[{id, name, email, role, is_admin, revoked}]}
 //   GET    /projects?since&limit              → 200 {projects[{id, name, account_id, account_name, published_revision, checkout{user_id,user_name,expires_at}|null, unsynced_walks}]}
+//   W5c (sync/drawings-list.ts)
+//   GET    /drawings?unattached=1|project_id|account_id&kind&since&limit → 200 {drawings[{…, project_name, account_name, created_by_name, page_count, annotation_count, first_page_id, first_preview_file_id, walk_id}], next_since, truncated} newest first (own + walked projects; designer/office/admin: all)
+//   GET    /drawings/:id                      → 200 {drawing, pages[], layers[] (render order), annotations[] (live), versions[] (whiteboard: [])} · 403 not visible · 404
 //
 // Mounted by src/index.ts ONLY when env.SYNC_ROUTES === "on" (the sandbox deployment), AFTER
 // the tenant-era /projects/:pid/(membership|forum-categories|action-items|forums) routes, which
@@ -76,6 +80,7 @@ import { exportWalk, renderWalkPage, postWalkReply, pullReplies } from "./walk-r
 import { projectHistory } from "./history";
 import { postDiagnostic, listDiagnostics } from "./diagnostics";
 import { listWalks, getWalk, listRejections, resolveRejection, listMembers, listProjects } from "./office";
+import { listDrawings, getDrawingBundle } from "./drawings-list";
 import { takeCheckout, renewCheckout, releaseCheckout, overrideCheckout } from "./checkout";
 import { getReview, patchReview, publishProject } from "./review";
 import { attachWalk } from "./attach";
@@ -119,6 +124,8 @@ const RE_HISTORY = /^\/projects\/([^/]+)\/history$/;
 // W5b
 const RE_WALK_ONE = /^\/walks\/([^/]+)$/;
 const RE_REJECTION_ONE = /^\/sync\/rejections\/([^/]+)$/;
+// W5c — exactly one segment after /drawings/: never /drawings/:id/layers|versions|attach|detach|move|copy
+const RE_DRAWING_ONE = /^\/drawings\/([^/]+)$/;
 
 /** True for the paths this module owns (never /sync/calendar, never the tenant-era /projects routes). */
 export function isSyncPath(path: string): boolean {
@@ -132,7 +139,8 @@ export function isSyncPath(path: string): boolean {
     RE_WALK_EXPORT.test(path) || RE_WALK_PULL.test(path) || RE_WALK_PAGE.test(path) || RE_WALK_REPLY.test(path) ||
     RE_FILE_GET.test(path) || RE_HISTORY.test(path) ||
     path === "/walks" || RE_WALK_ONE.test(path) || path === "/sync/rejections" || RE_REJECTION_ONE.test(path) ||
-    path === "/members" || path === "/projects" || path === "/diagnostics"
+    path === "/members" || path === "/projects" || path === "/diagnostics" ||
+    path === "/drawings" || RE_DRAWING_ONE.test(path)
   );
 }
 
@@ -389,6 +397,17 @@ export async function handleSyncRoute(request: Request, env: Env, path: string, 
   if (path === "/projects") {
     if (method !== "GET") return notAllowed;
     return listProjects(ctx, new URL(request.url).searchParams);
+  }
+
+  // --- W5c ----------------------------------------------------------------------------
+  if (path === "/drawings") {
+    if (method !== "GET") return notAllowed;
+    return listDrawings(ctx, new URL(request.url).searchParams);
+  }
+
+  if ((m = RE_DRAWING_ONE.exec(path))) {
+    if (method !== "GET") return notAllowed;
+    return getDrawingBundle(ctx, m[1]);
   }
 
   return null;
