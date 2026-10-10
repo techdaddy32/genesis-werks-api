@@ -1,5 +1,6 @@
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07
 // row: W5c · run: run-2026-10-07-drawing-layer-11 · 2026-10-09 — layerView exported for the GET /drawings/:id bundle (drawings-list.ts)
+// row: A5-fix1 · 2026-10-09 — annotations.checked null → false (first real canvas sync hit the NOT NULL)
 //==============================================================================
 // sync/layers.ts — layer governance (drawing-layer spec §2a Amendment 1, §5.3, §5.5).
 //
@@ -186,6 +187,8 @@ export const annotationRuleHook = async (input: RuleHookInput): Promise<RuleHook
   if (!pageId) return { kind: "reject", reason: "schema", detail: "page_id is required" };
   const page = await drawingOfPage(tx, pageId, org);
   if (!page) return { kind: "reject", reason: "unknown_parent", detail: "page_id → drawings.pages not found in this organization" };
+  // A5-fix1: `checked` is NOT NULL DEFAULT false on the server; a phone that sends null meant "not checked".
+  if ("checked" in row && row.checked == null) row.checked = false;
   const hasProject = page.project_id != null;
   const holds = await holdsLiveCheckout(tx, page.project_id, org, actorId);
 

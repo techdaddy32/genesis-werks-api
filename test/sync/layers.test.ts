@@ -439,3 +439,24 @@ describe.skipIf(!available)("W3 layer governance", () => {
     });
   });
 });
+
+// row: A5-fix1 · 2026-10-09 — regression: a phone sending checked: null must not hit the NOT NULL
+import { describe as describeFix, it as itFix, expect as expectFix, beforeAll as beforeAllFix, afterAll as afterAllFix } from "vitest";
+import { dbAvailable as dbAvailFix, ownerSql as ownerSqlFix, createTestOrg as createOrgFix, syncEnv as syncEnvFix, syncRequest as syncRequestFix, callSync as callSyncFix, syncSet as syncSetFix, type Sql as SqlFix, type TestOrg as TestOrgFix } from "./_db";
+import type { PushResult as PushResultFix } from "../../src/sync/push";
+const availFix = await dbAvailFix();
+describeFix.skipIf(!availFix)("annotations.checked null → false (A5-fix1)", () => {
+  let owner: SqlFix; let t: TestOrgFix; const env = syncEnvFix();
+  beforeAllFix(async () => { owner = ownerSqlFix(); t = await createOrgFix(owner, "chk"); });
+  afterAllFix(async () => { await owner.end(); });
+  itFix("accepts a capture mark pushed with checked: null and stores false", async () => {
+    const layers = await owner`select id from drawings.layers where drawing_id = ${t.drawing} and name = 'Field Notes'`;
+    const pages = await owner`select id from drawings.pages where drawing_id = ${t.drawing} order by ordinal limit 1`;
+    const row = syncSetFix(t, t.techA, { page_id: pages[0].id, layer_id: layers[0].id, kind: "rect", geometry: { x: 1, y: 1, w: 2, h: 2 }, z: 1, checked: null, style: {}, label: null });
+    const res = (await callSyncFix(env, syncRequestFix("POST", "/sync/push", { actor: t.techA, org: t.org, body: { device_id: "ios-chk", rows: [{ table: "drawings.annotations", row }] } }))).body as PushResultFix;
+    expectFix(res.rejected).toEqual([]);
+    expectFix(res.accepted.length).toBe(1);
+    const stored = await owner`select checked from drawings.annotations where id = ${row.id as string}`;
+    expectFix(stored[0].checked).toBe(false);
+  });
+});
