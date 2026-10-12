@@ -2,6 +2,7 @@
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — scheduled(): walk-tool cron (lease warnings, file verify, orphan report) behind SYNC_ROUTES
 // row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — a SyncResponse with contentType (GET /walk/:token HTML, GET /files/:id bytes) is sent verbatim, not as JSON
 // row: W5b · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — office list routes: tenant-era GET /projects (Zoho picker) yields to sync/office.ts when SYNC_ROUTES=on
+// row: K2 · run: run-2026-10-07-drawing-layer-15 · 2026-10-12 — JSON sync responses may carry headers (ETag on GET /catalog); 304 sent bodiless; ETag exposed to CORS callers
 //==============================================================================
 // index.ts — Worker entry point: HTTP router + cron handler.
 //
@@ -1154,6 +1155,9 @@ export default {
         if (r) {
           // W5: raw bodies (text/html review page, file bytes) carry their own Content-Type.
           if (r.contentType) return new Response(r.body as BodyInit, { status: r.status, headers: { "Content-Type": r.contentType, ...(r.headers ?? {}), ...cors } });
+          // K2: a JSON route may add headers (GET /catalog → ETag); 304 is sent with no body.
+          if (r.status === 304) return new Response(null, { status: 304, headers: { ...(r.headers ?? {}), ...cors } });
+          if (r.headers) return new Response(JSON.stringify(r.body, null, 2), { status: r.status, headers: { "Content-Type": "application/json", ...r.headers, ...cors } });
           return json(cors, r.status, r.body);
         }
       }
@@ -1204,8 +1208,9 @@ function corsHeaders(allowOrigin: string): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": allowOrigin,
     "Access-Control-Allow-Methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Admin-Pin, X-Actor-Id, X-Organization-Id",
     "Access-Control-Max-Age": "86400",
+    "Access-Control-Expose-Headers": "ETag",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Admin-Pin, X-Actor-Id, X-Organization-Id, If-None-Match",
     Vary: "Origin",
   };
 }

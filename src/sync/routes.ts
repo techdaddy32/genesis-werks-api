@@ -6,6 +6,7 @@
 // row: W5b · run: run-2026-10-07-drawing-layer-09 · 2026-10-09 — office list routes (GET /walks · GET /walks/:id · GET+PATCH /sync/rejections · GET /members · GET /projects)
 // row: A2-fix4 · 2026-10-09 — /diagnostics
 // row: W5c · run: run-2026-10-07-drawing-layer-11 · 2026-10-09 — drawings list + bundle (GET /drawings · GET /drawings/:id)
+// row: K2 · run: run-2026-10-07-drawing-layer-15 · 2026-10-12 — catalog (GET /catalog · GET /catalog/items/:id · GET /catalog/bundles/:id/lines · POST/PATCH /catalog/items · hide · glyph · PUT /catalog/bundles/:id/lines)
 //==============================================================================
 // sync/routes.ts — HTTP glue for the walk-tool routes (new schema, 001→090).
 //
@@ -60,6 +61,16 @@
 //   W5c (sync/drawings-list.ts)
 //   GET    /drawings?unattached=1|project_id|account_id&kind&since&limit → 200 {drawings[{…, project_name, account_name, created_by_name, page_count, annotation_count, first_page_id, first_preview_file_id, walk_id}], next_since, truncated} newest first (own + walked projects; designer/office/admin: all)
 //   GET    /drawings/:id                      → 200 {drawing, pages[], layers[] (render order), annotations[] (live), versions[] (whiteboard: [])} · 403 not visible · 404
+//   K2 (catalog/read.ts · catalog/write.ts) — contract work/catalog-contract-v1.md; schema 058
+//   GET    /catalog?kind&legend_set&since&include_hidden=0|1 (any member) → 200 {legend_sets[], items[], bundle_lines[], tombstones[], etag, generated_at} + ETag header · If-None-Match match → 304 bodiless
+//   GET    /catalog/items/:id                 → 200 {item, resolved_from} (a base id answers with the org's override when one exists) · 404
+//   GET    /catalog/bundles/:id/lines         → 200 {bundle, lines[]} · 404 · 409 not a bundle
+//   POST   /catalog/items                     (office/admin) {kind, key, name, …} → 201 {item} · 400 (validation; connector `source`) · 409 duplicate org+kind+key
+//   PATCH  /catalog/items/:id                 (office/admin) org row → 200 {item} · BASE row → mints the org's override → 201 {item, overrode:true, base_id}; a second PATCH on the base id updates it → 200
+//   POST   /catalog/items/:id/hide            (office/admin) → status 'hidden' (override row when base) → 200 / 201
+//   POST   /catalog/items/:id/glyph           (office/admin; symbols) → 201 {file_id, put_url, …} via files.ts (kind 'glyph'); PUT bytes, then PATCH {glyph_file_id}
+//   PUT    /catalog/bundles/:id/lines         (office/admin) [{line_item_id|line_item_key, quantity, unit?}] → 200 {bundle, lines[], removed} · 409 base bundle
+//   DELETE anything under /catalog            → 405 (contract §5 rule 1: never delete — hide)
 //
 // Mounted by src/index.ts ONLY when env.SYNC_ROUTES === "on" (the sandbox deployment), AFTER
 // the tenant-era /projects/:pid/(membership|forum-categories|action-items|forums) routes, which
@@ -87,6 +98,8 @@ import { attachWalk } from "./attach";
 import { listLayers, createLayer, patchLayer, tombstoneLayer } from "./layers";
 import { attachDrawing, detachDrawing, moveDrawing, copyDrawing, moveAnnotation } from "./drawings";
 import { listVersions, transitionVersion, compareVersions } from "./versions";
+import { getCatalog, getItem, getBundleLines } from "../catalog/read";
+import { createItem, patchItem, hideItem, presignGlyph, putBundleLines } from "../catalog/write";
 
 export interface SyncResponse {
   status: number;
@@ -126,6 +139,9 @@ const RE_WALK_ONE = /^\/walks\/([^/]+)$/;
 const RE_REJECTION_ONE = /^\/sync\/rejections\/([^/]+)$/;
 // W5c — exactly one segment after /drawings/: never /drawings/:id/layers|versions|attach|detach|move|copy
 const RE_DRAWING_ONE = /^\/drawings\/([^/]+)$/;
+// K2
+const RE_CATALOG_ITEM = /^\/catalog\/items\/([^/]+)(?:\/(hide|glyph))?$/;
+const RE_CATALOG_BUNDLE_LINES = /^\/catalog\/bundles\/([^/]+)\/lines$/;
 
 /** True for the paths this module owns (never /sync/calendar, never the tenant-era /projects routes). */
 export function isSyncPath(path: string): boolean {
@@ -140,7 +156,8 @@ export function isSyncPath(path: string): boolean {
     RE_FILE_GET.test(path) || RE_HISTORY.test(path) ||
     path === "/walks" || RE_WALK_ONE.test(path) || path === "/sync/rejections" || RE_REJECTION_ONE.test(path) ||
     path === "/members" || path === "/projects" || path === "/diagnostics" ||
-    path === "/drawings" || RE_DRAWING_ONE.test(path)
+    path === "/drawings" || RE_DRAWING_ONE.test(path) ||
+    path === "/catalog" || path === "/catalog/items" || RE_CATALOG_ITEM.test(path) || RE_CATALOG_BUNDLE_LINES.test(path)
   );
 }
 
@@ -408,6 +425,42 @@ export async function handleSyncRoute(request: Request, env: Env, path: string, 
   if ((m = RE_DRAWING_ONE.exec(path))) {
     if (method !== "GET") return notAllowed;
     return getDrawingBundle(ctx, m[1]);
+  }
+
+  // --- K2 -----------------------------------------------------------------------------
+  // Reads: every member role. Writes: office / admin (the handlers answer 403 otherwise). DELETE: never (405).
+  if (path === "/catalog") {
+    if (method !== "GET") return notAllowed;
+    return getCatalog(ctx, new URL(request.url).searchParams, request.headers.get("If-None-Match"));
+  }
+
+  if (path === "/catalog/items") {
+    if (method !== "POST") return notAllowed;
+    return createItem(ctx, await readJsonOrEmpty(request));
+  }
+
+  if ((m = RE_CATALOG_ITEM.exec(path))) {
+    const itemId = m[1];
+    const act = m[2];
+    if (!act) {
+      if (method === "GET") return getItem(ctx, itemId);
+      if (method === "PATCH") return patchItem(ctx, itemId, await readJsonOrEmpty(request));
+      return notAllowed;
+    }
+    if (method !== "POST") return notAllowed;
+    if (act === "hide") return hideItem(ctx, itemId);
+    return presignGlyph(ctx, itemId, putUrlFor(origin));
+  }
+
+  if ((m = RE_CATALOG_BUNDLE_LINES.exec(path))) {
+    if (method === "GET") return getBundleLines(ctx, m[1]);
+    if (method === "PUT") {
+      const text = await request.text();
+      let parsed: unknown = null;
+      try { parsed = text.trim() ? JSON.parse(text) : null; } catch { parsed = null; }
+      return putBundleLines(ctx, m[1], parsed);
+    }
+    return notAllowed;
   }
 
   return null;

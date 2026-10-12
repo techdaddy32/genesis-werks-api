@@ -1,6 +1,7 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W3 · run: run-2026-10-07-drawing-layer-05 · 2026-10-07 — rule-hook contract widened (rowClass / redirect fields / extra); hooks registered by sync/layers.ts
 // row: W4 · run: run-2026-10-07-drawing-layer-06 · 2026-10-08 — 055 columns: copied_from_id (annotations / room_polygons / location_placements), location_notes answered_at/by + kinds question/task, location_media internal / archived_at
+// row: K2 · run: run-2026-10-07-drawing-layer-15 · 2026-10-12 — 058 §3a columns: device_key / bundle_key (device_placements) · device_key / bundle_key / legend_set_key (location_placements)
 //==============================================================================
 // sync/tables.ts — the /sync/push allow-list: which tables a device may push,
 // which columns it may write, which columns are FK parents (unknown_parent
@@ -170,6 +171,8 @@ export const TABLE_SPECS: Record<SyncTable, TableSpec> = {
     columns: [
       "account_id", "project_id", "location_id", "location_hint", "room_id", "room_hint", "capture_kind",
       "product_name", "product_sku", "catalog_key", "placement_status", "phase", "replaced_placement_id", "custom",
+      // K2 (058 §3a): the product chosen DURING design — nullable keys into catalog.items (device / bundle); catalog_key stays the base symbol
+      "device_key", "bundle_key",
     ],
     project: "column",
     room: "room_id",
@@ -214,6 +217,8 @@ export const TABLE_SPECS: Record<SyncTable, TableSpec> = {
     columns: [
       "account_id", "project_id", "drawing_id", "drawing_version_id", "page_id", "location_id", "location_hint",
       "room_id", "room_hint", "x", "y", "rotation", "symbol_key", "label_text", "metadata", "copied_from_id",
+      // K2 (058 §3a): design-time product keys + which legend set the pin renders under (a page may show several)
+      "device_key", "bundle_key", "legend_set_key",
     ],
     project: "column",
     room: "room_id",

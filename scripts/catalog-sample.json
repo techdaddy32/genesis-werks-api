@@ -1,0 +1,37 @@
+[
+  {
+    "kind": "wire",
+    "key": "cat6_plenum",
+    "name": "Cat6 plenum (CMP)",
+    "wire_type": "cat6",
+    "gauge": "23 AWG",
+    "conductors": 8,
+    "jacket": "CMP",
+    "color": "white",
+    "default_label": "6P",
+    "unit": "ft",
+    "ordinal": 10
+  },
+  {
+    "kind": "device",
+    "key": "example_wap",
+    "name": "Example Wi-Fi 6 access point",
+    "manufacturer": "Example Networks",
+    "model": "EX-AP6",
+    "category": "Network",
+    "symbol_key": "wap",
+    "default_wire_key": "cat6",
+    "default_label": "AP",
+    "attributes": { "poe": "802.3at" }
+  },
+  {
+    "kind": "bundle",
+    "key": "example_data_pw",
+    "name": "Data prewire (example package)",
+    "part_number": "EX-PW-DATA-1",
+    "category": "Structured Wiring",
+    "symbol_key": "data",
+    "default_wire_key": "cat6",
+    "default_label": "D"
+  }
+]

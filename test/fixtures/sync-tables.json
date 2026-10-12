@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-11T17:22:02.368Z",
+  "generated_at": "2026-10-12T17:37:28.746Z",
   "source": "scripts/export-sync-tables.ts",
   "tables": {
     "places.walks": {
@@ -169,7 +169,9 @@
         "placement_status",
         "phase",
         "replaced_placement_id",
-        "custom"
+        "custom",
+        "device_key",
+        "bundle_key"
       ],
       "not_null": [
         "organization_id",
@@ -445,7 +447,10 @@
         "symbol_key",
         "label_text",
         "metadata",
-        "copied_from_id"
+        "copied_from_id",
+        "device_key",
+        "bundle_key",
+        "legend_set_key"
       ],
       "not_null": [
         "organization_id",

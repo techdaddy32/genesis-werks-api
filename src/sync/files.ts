@@ -1,6 +1,7 @@
 // row: W1 · run: run-2026-10-07-drawing-layer-03 · 2026-10-07
 // row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 — hardened PUT; POST /files; POST /files/:id/uploaded; verify + orphan sweep (cron)
 // row: W5 · run: run-2026-10-07-drawing-layer-07 · 2026-10-09 — GET /files/:id streams a landed file's bytes (the walk review page's <img> source)
+// row: K2 · run: run-2026-10-07-drawing-layer-15 · 2026-10-12 — file kind 'glyph' (catalog symbol SVGs; POST /catalog/items/:id/glyph presigns through createFile)
 //==============================================================================
 // sync/files.ts — shared.files lifecycle (walk spec §5.4, §6 check 6).
 //
@@ -169,7 +170,7 @@ export async function serveFileBytes(ctx: OrganizationContext, store: Pick<FileS
 // POST /files
 //------------------------------------------------------------------------------
 
-const FILE_KINDS = new Set(["photo", "plan_source", "page_preview", "export", "walk_snapshot", "attachment"]);
+const FILE_KINDS = new Set(["photo", "plan_source", "page_preview", "export", "walk_snapshot", "attachment", "glyph"]);
 
 export async function createFile(ctx: OrganizationContext, body: unknown, putUrl: (id: string) => string): Promise<RouteResult> {
   if (ctx.revoked) return { status: 403, body: { error: "member is inactive" } };
