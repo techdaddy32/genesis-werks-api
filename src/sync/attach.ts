@@ -1,4 +1,4 @@
-// row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07
+// row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 · row: FX1 · 2026-10-15: attach now also anchors drawings.drawings (walk sketches) and resolves drawings.pages room hints
 //==============================================================================
 // sync/attach.ts — POST /walks/:id/attach {project_id} (walk spec §5.2 walks, §6 check 4).
 //
@@ -149,6 +149,25 @@ async function resolveHints(tx: Tx, org: string, walkId: string, projectId: stri
     update shared.files set project_id = coalesce(project_id, ${projectId}), account_id = coalesce(account_id, ${accountId}), received_at = now()
      where walk_id = ${walkId} and organization_id = ${org} and deleted_at is null returning id`;
   rowsTouched["shared.files"] = files.length;
+
+  // FX1: walk sketches (drawings.drawings.walk_id) take the project as their ONE anchor (rule A1:
+  // project_id xor account_id, so never both) — only still-unanchored sketches move; their pages carry
+  // room_hint / room_id and resolve by the same name rule (pages have no project_id column).
+  const sketches = await tx<{ id: string }[]>`
+    update drawings.drawings set project_id = ${projectId}, received_at = now()
+     where walk_id = ${walkId} and organization_id = ${org} and deleted_at is null and project_id is null and account_id is null returning id`;
+  rowsTouched["drawings.drawings"] = sketches.length;
+  const hintedPages = await tx<{ id: string; room_hint: string }[]>`
+    select id, room_hint from drawings.pages
+     where walk_id = ${walkId} and organization_id = ${org} and deleted_at is null and room_id is null and room_hint is not null and btrim(room_hint) <> ''`;
+  let pagesResolved = 0;
+  for (const row of hintedPages) {
+    const room = byName.get(norm(row.room_hint));
+    if (!room) continue;
+    await tx`update drawings.pages set room_id = ${room.id}, received_at = now() where id = ${row.id} and organization_id = ${org} and room_id is null`;
+    pagesResolved += 1;
+  }
+  rowsTouched["drawings.pages"] = pagesResolved;
 
   const pending: Resolution["pending"] = [];
   for (const p of pendingCount.values()) {

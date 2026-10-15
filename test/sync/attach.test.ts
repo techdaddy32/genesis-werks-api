@@ -1,4 +1,4 @@
-// row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07
+// row: W2 · run: run-2026-10-07-drawing-layer-04 · 2026-10-07 · row: FX1 · 2026-10-15: walk sketch + page cascade
 // POST /walks/:id/attach — in place, no rekey; room_hint → room_id; room_hint_pending rows (walk spec §5.2, §6 check 4).
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { dbAvailable, ownerSql, createTestOrg, syncEnv, syncRequest, callSync, syncSet, ownerEvents, ownerRow, type Sql, type TestOrg } from "./_db";
@@ -30,6 +30,8 @@ describe.skipIf(!available)("POST /walks/:id/attach", () => {
   let flexNote2: Record<string, unknown>;
   let noHintNote: Record<string, unknown>;
   let file: Record<string, unknown>;
+  let sketch: Record<string, unknown>;
+  let sketchPage: Record<string, unknown>;
 
   beforeAll(async () => {
     owner = ownerSql();
@@ -42,12 +44,17 @@ describe.skipIf(!available)("POST /walks/:id/attach", () => {
     flexNote1 = syncSet(t, t.techA, { walk_id: walk.id, room_hint: "Flex Rm", kind: "note", body: "ceiling speakers?" });
     flexNote2 = syncSet(t, t.techA, { walk_id: walk.id, room_hint: "flex rm", kind: "flag", body: "no power here" });
     noHintNote = syncSet(t, t.techA, { walk_id: walk.id, kind: "note", body: "general" });
+    // FX1: a walk sketch (whiteboard bound to the draft walk) with a kitchen-hinted page
+    sketch = syncSet(t, t.techA, { walk_id: walk.id, kind: "whiteboard", working_title: "Sketch" });
+    sketchPage = syncSet(t, t.techA, { walk_id: walk.id, drawing_id: sketch.id, ordinal: 1, name: "Kitchen", room_hint: "Kitchen" });
     const r = await push(t.techA, [
       { table: "places.walks", row: walk }, { table: "shared.files", row: file }, { table: "places.location_notes", row: kitchenNote },
       { table: "places.location_media", row: kitchenMedia }, { table: "places.location_notes", row: flexNote1 },
       { table: "places.location_notes", row: flexNote2 }, { table: "places.location_notes", row: noHintNote },
     ], walk.id as string);
     expect(r.rejected).toEqual([]);
+    const rs = await push(t.techA, [{ table: "drawings.drawings", row: sketch }, { table: "drawings.pages", row: sketchPage }], walk.id as string);
+    expect(rs.rejected).toEqual([]);
   });
   afterAll(async () => { await owner.end({ timeout: 2 }); });
 
@@ -96,6 +103,11 @@ describe.skipIf(!available)("POST /walks/:id/attach", () => {
       expect(row.room_id).toBeNull();
     }
     expect((await ownerRow(owner, "shared.files", file.id as string))!.project_id).toBe(t.project);
+    // FX1: the walk sketch is anchored and its hinted page resolves to the room
+    expect((await ownerRow(owner, "drawings.drawings", sketch.id as string))!.project_id).toBe(t.project);
+    expect((await ownerRow(owner, "drawings.pages", sketchPage.id as string))!.room_id).toBe(t.rooms.kitchen);
+    expect(b.rows_touched["drawings.drawings"]).toBe(1);
+    expect(b.rows_touched["drawings.pages"]).toBe(1);
 
     const pend = await owner<Record<string, unknown>[]>`select * from places.structure_changes where walk_id = ${walk.id} and change_kind = 'room_hint_pending'`;
     expect(pend.length).toBe(1);
